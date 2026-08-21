@@ -72,8 +72,8 @@ runcmd:
 
   # Install ebs-autoscale from a pinned release and mount /scratch as lvm.ext4.
   - EBS_AUTOSCALE_VERSION=1.0.0
-  - curl -sL "https://github.com/clintval/ebs-autoscale/archive/refs/tags/${EBS_AUTOSCALE_VERSION}.tar.gz" | tar xz -C /opt/
-  - mv "/opt/ebs-autoscale-${EBS_AUTOSCALE_VERSION#v}" /opt/ebs-autoscale
+  - mkdir -p /opt/ebs-autoscale
+  - curl -sL "https://github.com/clintval/ebs-autoscale/archive/refs/tags/${EBS_AUTOSCALE_VERSION}.tar.gz" | tar xz --strip-components=1 -C /opt/ebs-autoscale
   - >-
     sh /opt/ebs-autoscale/sbin/install.sh
     -m /scratch
@@ -167,11 +167,6 @@ The instance profile needs the following actions:
   ]
 }
 ```
-
-If you encrypt volumes with a customer-managed KMS key, also grant the instance role the usual `kms:CreateGrant`, `kms:GenerateDataKeyWithoutPlaintext`, and `kms:Decrypt` on that key.
-
-> [!NOTE]
-> `"Resource": "*"` is broad. It can be tightened with `ec2:ResourceTag`/`aws:RequestTag` conditions keyed on the `source-instance` tag this tool writes; that hardening is left to the operator.
 
 ## Development and Testing
 
