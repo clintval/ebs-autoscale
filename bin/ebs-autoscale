@@ -28,202 +28,223 @@
 #  IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
 
-. /usr/local/amazon-ebs-autoscale/shared/utils.sh
+# The autoscaling daemon. Polls filesystem utilization and, when it crosses a
+# device-count-dependent threshold, creates and folds in another EBS volume via
+# create-ebs-volume. Amazon Linux 2023, systemd, lvm.ext4 only.
 
-initialize
+# 'local' is supported by dash and bash, the shells this runs under on AL2023.
+# shellcheck disable=SC3043
 
-MIN_EBS_VOLUME_SIZE=$(get_config_value .limits.min_ebs_volume_size)
-MAX_EBS_VOLUME_SIZE=$(get_config_value .limits.max_ebs_volume_size)
-MAX_LOGICAL_VOLUME_SIZE=$(get_config_value .limits.max_logical_volume_size)
-MAX_EBS_VOLUME_COUNT=$(get_config_value .limits.max_ebs_volume_count)
-INITIAL_UTILIZATION_THRESHOLD=$(get_config_value .limits.initial_utilization_threshold)
+EBS_AUTOSCALE_HOME="${EBS_AUTOSCALE_HOME:-/usr/local/ebs-autoscale}"
+# shellcheck source=shared/utils.sh
+. "${EBS_AUTOSCALE_HOME}/shared/utils.sh"
 
-FILE_SYSTEM=$(get_config_value .filesystem)
+CREATE_VOLUME="${EBS_AUTOSCALE_HOME}/bin/create-ebs-volume"
 
-LVM_VG=$(get_config_value .lvm.volume_group)
-LVM_LV=$(get_config_value .lvm.logical_volume)
+# Tag written to every volume this tool attaches; its presence distinguishes an
+# autoscaled volume from one attached for other reasons.
+CREATION_TAG=amazon-ebs-autoscale-creation-time
 
-MOUNTPOINT=$(get_config_value .mountpoint)
-BASEDIR=$(dirname $0)
-
-starting
-trap "stopping; exit" INT TERM KILL
-
-logthis "EBS Autoscaling mountpoint: ${MOUNTPOINT}"
-logthis "Region = $AWS_REGION"
-logthis "Availability Zone = $AWS_AZ"
-
-# make sure that this device is mounted.
-until [ -d "${MOUNTPOINT}" ]; do
-  sleep 1
-done
-
+# Number of autoscaled volumes currently attached to this instance.
 get_num_devices() {
-  # This tag is added to all devices attached by this ebs-autoscale in the create-ebs-volume script it's presence indicates
-  # a device that has been added by auto-expansion rather than an EBS volume attached for other reasons or at startup.
-  TAG=amazon-ebs-autoscale-creation-time
-
-  # determine the number of devices attached by ebs-autoscale on this instance. Volumes attached in other ways are
-  # excluded as they aren't relevant to autoscaling
-  local attached_volumes=""
-  local max_attempts=5
-
-  # By waiting until the attached_volumes value is >=0 we will retry with backoff hopefully avoiding request limits
-  # eventually getting a usable value. The >= 0 test is really a test that we got an integer response
-  for i in $(eval echo "{0..$max_attempts}") ; do
-      local attached_volumes_response=""
-
-      attached_volumes_response=$(
-        aws ec2 describe-volumes \
-            --region $AWS_REGION \
-            --filters Name=attachment.instance-id,Values=$INSTANCE_ID Name=tag-key,Values=$TAG
-       )
-
-      attached_volumes=$(echo "$attached_volumes_response" | jq '.Volumes | length')
-      if [ "$attached_volumes" -ge 0 ]; then
-          break
-      fi
-
-      if [ $i -eq $max_attempts ] ; then
-        logthis "Could not determine the number of attached_volumes after $i attempts. Last response was: $attached_volumes_response"
-        break
-      fi
-
-      sleep $(( 2 ** i + $RANDOM %3 ))
-  done
-
-  echo "$attached_volumes"
+    local response
+    response=$(aws ec2 describe-volumes \
+        --region "$AWS_REGION" \
+        --filters "Name=attachment.instance-id,Values=${INSTANCE_ID}" "Name=tag-key,Values=${CREATION_TAG}" \
+        --output json 2>/dev/null)
+    printf '%s' "${response:-'{"Volumes":[]}'}" | jq '.Volumes | length'
 }
 
+# Total GB of EBS this instance has created (the autoscaled space), independent
+# of any local instance-store already in the volume group. "None"/empty become 0.
+get_autoscaled_size_gb() {
+    local size
+    size=$(aws ec2 describe-volumes \
+        --region "$AWS_REGION" \
+        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
+        --query 'sum(Volumes[].Size)' \
+        --output text 2>/dev/null)
+    case "$size" in
+        ''|None|null) echo 0 ;;
+        *) echo "$size" ;;
+    esac
+}
+
+# calc_threshold NUM_DEVICES -> utilization percent that triggers a new volume.
+# The threshold rises as devices accumulate so late additions are less eager.
 calc_threshold() {
-  # calculates percent utilization threshold for adding additional ebs volumes
-  # as more ebs volumes are added, the threshold level increases
-
-  local num_devices=$1
-  local threshold=${INITIAL_UTILIZATION_THRESHOLD}
-
-  if [ "$num_devices" -ge "4" ] && [ "$num_devices" -le "6" ]; then
-    threshold=80
-  elif [ "$num_devices" -gt "6" ] && [ "$num_devices" -le "10" ]; then
-    threshold=90
-  elif [ "$num_devices" -gt "10" ]; then
-    threshold=90
-  else
-    threshold=${INITIAL_UTILIZATION_THRESHOLD}
-  fi
-
-  echo ${threshold}
+    local num_devices="$1"
+    if [ "$num_devices" -ge 4 ] && [ "$num_devices" -le 6 ]; then
+        echo 80
+    elif [ "$num_devices" -gt 6 ]; then
+        echo 90
+    else
+        echo "$INITIAL_UTILIZATION_THRESHOLD"
+    fi
 }
 
+# calc_new_size NUM_DEVICES -> size in GB for the next volume, clamped to the
+# configured min/max. Larger volumes are used as the device count grows.
 calc_new_size() {
-  # calculates the size to use for new ebs volumes to expand space
-  # new volume sizes increase as the number of attached volumes increase
-  local num_devices=$1
-  #local num_devices=$(get_num_devices)
-  local new_size=$MIN_EBS_VOLUME_SIZE
-
-  if [ "$num_devices" -ge "4" ] && [ "$num_devices" -le "6" ]; then
-    if [ "$MAX_EBS_VOLUME_SIZE" -ge "299" ] && [ "$MIN_EBS_VOLUME_SIZE" -le "299" ]; then
-      new_size=300
-    elif [ "$MIN_EBS_VOLUME_SIZE" -ge "299" ]; then
-      new_size=$MIN_EBS_VOLUME_SIZE
-    else
-      new_size=$MAX_EBS_VOLUME_SIZE
+    local num_devices="$1"
+    local new_size="$MIN_EBS_VOLUME_SIZE"
+    if [ "$num_devices" -ge 4 ] && [ "$num_devices" -le 6 ]; then
+        if [ "$MAX_EBS_VOLUME_SIZE" -ge 299 ] && [ "$MIN_EBS_VOLUME_SIZE" -le 299 ]; then
+            new_size=300
+        elif [ "$MIN_EBS_VOLUME_SIZE" -ge 299 ]; then
+            new_size="$MIN_EBS_VOLUME_SIZE"
+        else
+            new_size="$MAX_EBS_VOLUME_SIZE"
+        fi
+    elif [ "$num_devices" -gt 6 ] && [ "$num_devices" -le 10 ]; then
+        if [ "$MAX_EBS_VOLUME_SIZE" -ge 999 ] && [ "$MIN_EBS_VOLUME_SIZE" -le 999 ]; then
+            new_size=1000
+        elif [ "$MIN_EBS_VOLUME_SIZE" -ge 999 ]; then
+            new_size="$MIN_EBS_VOLUME_SIZE"
+        else
+            new_size="$MAX_EBS_VOLUME_SIZE"
+        fi
+    elif [ "$num_devices" -gt 10 ]; then
+        new_size="$MAX_EBS_VOLUME_SIZE"
     fi
-  elif [ "$num_devices" -gt "6" ] && [ "$num_devices" -le "10" ]; then
-    if [ "$MAX_EBS_VOLUME_SIZE" -ge "999" ] && [ "$MIN_EBS_VOLUME_SIZE" -le "999" ]; then
-      new_size=1000
-    elif [ "$MIN_EBS_VOLUME_SIZE" -ge "999" ]; then
-      new_size=$MIN_EBS_VOLUME_SIZE
-    else
-      new_size=$MAX_EBS_VOLUME_SIZE
-    fi
-  elif [ "$num_devices" -gt "10" ]; then
-    new_size=$MAX_EBS_VOLUME_SIZE
-  else
-    if [ "$MAX_EBS_VOLUME_SIZE" -ge "149" ]; then
-      new_size=$MIN_EBS_VOLUME_SIZE
-    else
-      new_size=$MAX_EBS_VOLUME_SIZE
-    fi
-  fi
-
-  echo ${new_size}
+    echo "$new_size"
 }
 
-add_space () {
-  #local num_devices=$(get_num_devices)
-  local num_devices=$1
-  if [ "${num_devices}" -ge "$MAX_EBS_VOLUME_COUNT" ]; then
-    logthis "No more volumes can be safely added."
+# read_fs_stats MOUNTPOINT -> "SIZE USED AVAIL PCT" (bytes, bytes, bytes, int %).
+# Uses df --output so the columns are fixed and the long device-mapper name
+# cannot wrap onto a second line and shift the fields, and -B1 so the percentage
+# is not jittered by rounding sizes up to whole gigabytes.
+read_fs_stats() {
+    df -B1 --output=size,used,avail,pcent "$1" \
+        | awk 'END { gsub(/%/, "", $4); print $1, $2, $3, $4 }'
+}
+
+# can_grow NUM_DEVICES AUTOSCALED_GB -> 0 if another volume may be added.
+# Gates on the autoscaled bytes, not total filesystem size, so a large local
+# instance-store already in the volume group does not disable autoscaling.
+can_grow() {
+    local num_devices="$1"
+    local autoscaled_gb="$2"
+    [ "$num_devices" -lt "$MAX_EBS_VOLUME_COUNT" ] || return 1
+    [ "$autoscaled_gb" -lt "$MAX_LOGICAL_VOLUME_SIZE" ] || return 1
     return 0
-  fi
-
-  local curr_size=$(df -BG ${MOUNTPOINT} | grep ${MOUNTPOINT} | awk '{print $2} ' | cut -d'G' -f1)
-  if [ "${curr_size}" -lt "$MAX_LOGICAL_VOLUME_SIZE" ]; then
-    local vol_size=$(calc_new_size ${num_devices})
-    logthis "Extending logical volume ${MOUNTPOINT} by ${vol_size}GB"
-
-    DEVICE=$(${BASEDIR}/create-ebs-volume --size ${vol_size} --max-attached-volumes ${MAX_EBS_VOLUME_COUNT})
-
-    exit_status=$?
-    if [ $exit_status -eq 0 ]; then
-      if [ "${FILE_SYSTEM}" = "btrfs" ]; then
-        logthis "Adding device ${DEVICE} to logical volume ${MOUNTPOINT}"
-        btrfs device add ${DEVICE} ${MOUNTPOINT}
-        btrfs balance start -m ${MOUNTPOINT}
-      else
-        logthis "Adding device ${DEVICE} to logical volume /dev/mapper/${LVM_VG}-${LVM_LV}"
-        vgextend ${LVM_VG} ${DEVICE}
-        lvresize -l 100%VG /dev/mapper/${LVM_VG}-${LVM_LV}
-        resize2fs /dev/mapper/${LVM_VG}-${LVM_LV}
-      fi
-      logthis "Finished extending logical volume"
-
-    else
-      logthis "Error creating or attaching EBS volume"
-    fi
-
-  else
-    logthis "Maximum volume size ($MAX_LOGICAL_VOLUME_SIZE) reached"
-  fi
 }
 
-# number of event loops between utilization status log lines
-# helps to limit the log file size
-# utilization detection is not affected by this
-LOG_INTERVAL=$(get_config_value .logging.log_interval)
+# lvresize to use the whole volume group, tolerating exit 5 (already at size)
+# and guarding against a hang on the LVM lock.
+lvresize_full() {
+    local lv="$1"
+    local i=1
+    local status
+    while [ "$i" -le 3 ]; do
+        timeout -k 6 60 lvresize -l 100%VG "$lv"
+        status=$?
+        if [ "$status" -eq 0 ] || [ "$status" -eq 5 ]; then
+            return 0
+        fi
+        logerr "lvresize failed (status ${status}), attempt ${i}/3"
+        sleep 2
+        i=$(( i + 1 ))
+    done
+    return 1
+}
 
-# initialized value for log lines
-# report on first run
-LOG_COUNT=$LOG_INTERVAL
+# grow_filesystem DEVICE: fold a freshly attached device into the LV and grow ext4.
+grow_filesystem() {
+    local device="$1"
+    local lv="/dev/mapper/${LVM_VG}-${LVM_LV}"
+    case "$FILE_SYSTEM" in
+        lvm.ext4)
+            loginfo "adding ${device} to ${lv}"
+            vgextend "$LVM_VG" "$device" || return 1
+            lvresize_full "$lv" || return 1
+            retry 3 resize2fs "$lv" || return 1
+            ;;
+        *)
+            logerr "unsupported filesystem '${FILE_SYSTEM}'; only lvm.ext4 is supported"
+            return 1
+            ;;
+    esac
+}
 
-# time in seconds between event loops
-# keep this low so that rapid increases in utilization are detected
-DETECTION_INTERVAL=$(get_config_value .detection_interval)
-# get the number of devices once when the script first starts
-NUM_DEVICES=$(get_num_devices)
-THRESHOLD=$(calc_threshold "${NUM_DEVICES}")
-while true; do
+# add_space NUM_DEVICES: create one volume and extend the filesystem onto it.
+add_space() {
+    local num_devices="$1"
+    local autoscaled_gb
+    autoscaled_gb=$(get_autoscaled_size_gb)
+    if ! can_grow "$num_devices" "$autoscaled_gb"; then
+        loginfo "not growing: devices=${num_devices}/${MAX_EBS_VOLUME_COUNT} autoscaled=${autoscaled_gb}/${MAX_LOGICAL_VOLUME_SIZE}GB"
+        return 0
+    fi
+    local vol_size device
+    vol_size=$(calc_new_size "$num_devices")
+    loginfo "extending ${MOUNTPOINT} by ${vol_size}GB"
+    device=$("$CREATE_VOLUME" --size "$vol_size" --max-attached-volumes "$MAX_EBS_VOLUME_COUNT")
+    if [ -z "$device" ]; then
+        logerr "failed to create or attach a volume"
+        return 1
+    fi
+    if grow_filesystem "$device"; then
+        loginfo "finished extending ${MOUNTPOINT}"
+    else
+        logerr "failed to extend the filesystem onto ${device}"
+        return 1
+    fi
+}
 
-  STATS=$(df -BG  ${MOUNTPOINT} | grep -v Filesystem)
-  TOTAL_SIZE=$(echo ${STATS} | awk '{print $2}')
-  USED=$(echo ${STATS} | awk '{print $3}')
-  AVAILABLE=$(echo ${STATS} | awk '{print $4}')
-  PCT_UTILIZATION=$(echo ${STATS} | awk '{print $5}' | cut -d"%" -f1 -)
-  if  [ $PCT_UTILIZATION -ge "${THRESHOLD}" ]; then
-    # get number of devices only when we need to add more space
-  	NUM_DEVICES=$(get_num_devices)
-    logthis "LOW DISK (${PCT_UTILIZATION}%): Adding more."
-    add_space "$NUM_DEVICES"
-	NUM_DEVICES=$(expr $NUM_DEVICES + 1 )
-    THRESHOLD=$(calc_threshold "$NUM_DEVICES")
-    LOG_COUNT=$LOG_INTERVAL
-  fi
-  if [ "${LOG_COUNT}" -ge "${LOG_INTERVAL}" ]; then
-    logthis "Devices ${NUM_DEVICES} : Size ${TOTAL_SIZE} : Used ${USED} : Available ${AVAILABLE} : Used% ${PCT_UTILIZATION}% : Threshold ${THRESHOLD}%"
-    LOG_COUNT=0
-  fi
-  LOG_COUNT=$(expr $LOG_COUNT + 1 )
-  sleep $DETECTION_INTERVAL
-done
+run_daemon() {
+    starting
+    trap 'stopping; exit 0' INT TERM
+
+    loginfo "mountpoint=${MOUNTPOINT} region=${AWS_REGION} az=${AWS_AZ}"
+
+    until [ -d "$MOUNTPOINT" ]; do
+        sleep 1
+    done
+
+    local log_count="$LOG_INTERVAL"
+    local num_devices threshold stats pct
+    num_devices=$(get_num_devices)
+    threshold=$(calc_threshold "$num_devices")
+
+    while true; do
+        stats=$(read_fs_stats "$MOUNTPOINT")
+        pct=$(printf '%s' "$stats" | awk '{print $4}')
+
+        if [ "${pct:-0}" -ge "$threshold" ]; then
+            num_devices=$(get_num_devices)
+            loginfo "low disk (${pct}%): adding a volume"
+            add_space "$num_devices"
+            num_devices=$(( num_devices + 1 ))
+            threshold=$(calc_threshold "$num_devices")
+            log_count="$LOG_INTERVAL"
+        fi
+
+        if [ "$log_count" -ge "$LOG_INTERVAL" ]; then
+            loginfo "devices=${num_devices} stats_bytes=[${stats}] util=${pct}% threshold=${threshold}%"
+            log_count=0
+        fi
+        log_count=$(( log_count + 1 ))
+        sleep "$DETECTION_INTERVAL"
+    done
+}
+
+# Only run when executed directly; shellspec sources this file to unit-test the
+# pure functions and sets SHELLSPEC_VERSION in that environment.
+if [ -z "${SHELLSPEC_VERSION:-}" ]; then
+    initialize
+
+    MIN_EBS_VOLUME_SIZE=$(get_config_value .limits.min_ebs_volume_size)
+    MAX_EBS_VOLUME_SIZE=$(get_config_value .limits.max_ebs_volume_size)
+    MAX_LOGICAL_VOLUME_SIZE=$(get_config_value .limits.max_logical_volume_size)
+    MAX_EBS_VOLUME_COUNT=$(get_config_value .limits.max_ebs_volume_count)
+    INITIAL_UTILIZATION_THRESHOLD=$(get_config_value .limits.initial_utilization_threshold)
+    FILE_SYSTEM=$(get_config_value .filesystem)
+    LVM_VG=$(get_config_value .lvm.volume_group)
+    LVM_LV=$(get_config_value .lvm.logical_volume)
+    MOUNTPOINT=$(get_config_value .mountpoint)
+    LOG_INTERVAL=$(get_config_value .logging.log_interval)
+    DETECTION_INTERVAL=$(get_config_value .detection_interval)
+
+    run_daemon
+fi
