@@ -32,6 +32,17 @@ EBS_AUTOSCALE_RENDER_ONLY=1 EBS_AUTOSCALE_CONFIG_FILE=/dev/stdout \
     | jq empty /dev/stdin
 ```
 
+## End-to-End Testing
+
+`scripts/e2e.sh` runs the full install on a real Amazon Linux 2023 instance, fills the scratch mount to force a scale-up, and asserts it grew and left no volumes behind, tearing every resource down afterward.
+It uses your default AWS credentials and costs a few cents per run, so it is gated behind an environment variable:
+
+```bash
+make e2e   # equivalent to: EBS_AUTOSCALE_E2E=1 bash scripts/e2e.sh
+```
+
+Override the region or instance type with `AWS_REGION` and `E2E_INSTANCE_TYPE`, or set `E2E_KEEP=1` to leave the instance up for inspection.
+
 ## Releasing
 
 Cut a GitHub Release with a `MAJOR.MINOR.PATCH` tag.

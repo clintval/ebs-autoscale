@@ -48,6 +48,7 @@ die() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit 1; }
 
 # Populated as resources are created; cleanup tears them down in reverse.
 INSTANCE_ID=""
+TERMINATED=""
 SG_ID=""
 ROLE_NAME=""
 PROFILE_NAME=""
@@ -63,9 +64,20 @@ cleanup() {
     return
   fi
   log "tearing down"
-  if [[ -n "$INSTANCE_ID" ]]; then
+  if [[ -n "$INSTANCE_ID" && -z "$TERMINATED" ]]; then
     aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null 2>&1 || true
     aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null 2>&1 || true
+  fi
+  # Belt-and-suspenders: delete any volume this instance created that outlived
+  # it. DeleteOnTermination handles these in the normal case; this catches a
+  # volume whose DoT was never set (the exact failure the test guards against).
+  if [[ -n "$INSTANCE_ID" ]]; then
+    local vol
+    for vol in $(aws ec2 describe-volumes --region "$REGION" \
+      --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" "Name=status,Values=available" \
+      --query 'Volumes[].VolumeId' --output text 2>/dev/null || true); do
+      aws ec2 delete-volume --region "$REGION" --volume-id "$vol" >/dev/null 2>&1 || true
+    done
   fi
   if [[ -n "$PROFILE_NAME" ]]; then
     aws iam remove-role-from-instance-profile --instance-profile-name "$PROFILE_NAME" --role-name "$ROLE_NAME" >/dev/null 2>&1 || true
@@ -77,7 +89,17 @@ cleanup() {
     aws iam delete-role --role-name "$ROLE_NAME" >/dev/null 2>&1 || true
   fi
   if [[ -n "$SG_ID" ]]; then
-    aws ec2 delete-security-group --region "$REGION" --group-id "$SG_ID" >/dev/null 2>&1 || true
+    local i
+    for ((i = 0; i < 6; i++)); do
+      if aws ec2 delete-security-group --region "$REGION" --group-id "$SG_ID" >/dev/null 2>&1; then
+        SG_ID=""
+        break
+      fi
+      sleep 10
+    done
+    if [[ -n "$SG_ID" ]]; then
+      log "warning: could not delete security group $SG_ID; delete it once its ENI drains"
+    fi
   fi
   if [[ -n "$BUCKET" && -n "$S3_KEY" ]]; then
     aws s3 rm "s3://${BUCKET}/${S3_KEY}" --region "$REGION" >/dev/null 2>&1 || true
@@ -248,7 +270,7 @@ aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID
 leaked="$(aws ec2 describe-volumes --region "$REGION" \
   --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" "Name=status,Values=available,in-use" \
   --query 'length(Volumes)' --output text)"
-INSTANCE_ID=""  # already terminated; keep cleanup from re-terminating
+TERMINATED=1  # already terminated; keep cleanup from re-terminating
 [[ "$leaked" == "0" ]] || die "$leaked autoscale volume(s) leaked after termination"
 
 log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), no leaks"
