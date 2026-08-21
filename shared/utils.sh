@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Copyright Amazon.com, Inc. or its affiliates.
 #
 #  Redistribution and use in source and binary forms, with or without
@@ -28,49 +28,111 @@
 #  IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
 
-function get_metadata() {
-    local key=$1
-    local metadata_ip='169.254.169.254'
+# Shared helpers for ebs-autoscale, sourced by install.sh, bin/ebs-autoscale,
+# and bin/create-ebs-volume. Targets Amazon Linux 2023, where /bin/sh is bash;
+# written in portable shell so `dash -n` and `shellcheck -x` stay clean.
 
-    if [ ! -z "$IMDSV2" ]; then
-        local token=$(curl -s -X PUT "http://$metadata_ip/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-        local token_wrapper='-H "X-aws-ec2-metadata-token: $token"'
+# 'local' is not in POSIX but is supported by dash and bash, the only shells
+# this runs under; keep it for lexical scoping.
+# shellcheck disable=SC3043
+
+IMDS_IP=169.254.169.254
+: "${EBS_AUTOSCALE_CONFIG_FILE:=/etc/ebs-autoscale.json}"
+: "${EBS_AUTOSCALE_LOG_FILE:=/var/log/ebs-autoscale.log}"
+
+# Fetch an instance-metadata value using IMDSv2. The session token is minted
+# once by initialize() and exported as IMDS_TOKEN so it survives the command
+# substitutions callers wrap this in; mint on demand if it is missing. `curl -f`
+# makes an IMDS 401 a non-zero exit rather than empty-output-with-success, which
+# is what silently produced empty region/instance-id on token-required instances.
+get_metadata() {
+    local key="$1"
+    if [ -z "${IMDS_TOKEN:-}" ]; then
+        IMDS_TOKEN=$(curl -sf -X PUT "http://${IMDS_IP}/latest/api/token" \
+            -H "X-aws-ec2-metadata-token-ttl-seconds: 21600") || {
+            logerr "failed to obtain an IMDSv2 token"
+            return 1
+        }
     fi
-    
-    echo `curl -s $token_wrapper http://$metadata_ip/latest/meta-data/$key`
+    curl -sf -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
+        "http://${IMDS_IP}/latest/meta-data/${key}"
 }
 
-function initialize() {
-    export AWS_AZ=$(get_metadata placement/availability-zone)
-    export AWS_REGION=$(echo ${AWS_AZ} | sed -e 's/[a-z]$//')
-    export INSTANCE_ID=$(get_metadata instance-id)
-    export EBS_AUTOSCALE_CONFIG_FILE=/etc/ebs-autoscale.json
+# Resolve region, availability zone, and instance id from IMDS, set the AWS CLI
+# retry policy, and resolve the log-file path once. Aborts if IMDS returns
+# nothing, which otherwise leaves every downstream `aws` call region-less.
+initialize() {
+    export AWS_RETRY_MODE=adaptive
+    export AWS_MAX_ATTEMPTS=10
+    export EBS_AUTOSCALE_CONFIG_FILE
+
+    local log_file
+    log_file=$(get_config_value .logging.log_file 2>/dev/null)
+    [ -n "$log_file" ] && [ "$log_file" != "null" ] && EBS_AUTOSCALE_LOG_FILE="$log_file"
+    export EBS_AUTOSCALE_LOG_FILE
+
+    IMDS_TOKEN=$(curl -sf -X PUT "http://${IMDS_IP}/latest/api/token" \
+        -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+    export IMDS_TOKEN
+
+    AWS_AZ=$(get_metadata placement/availability-zone)
+    AWS_REGION=$(printf '%s' "$AWS_AZ" | sed -e 's/[a-z]$//')
+    INSTANCE_ID=$(get_metadata instance-id)
+    export AWS_AZ AWS_REGION INSTANCE_ID
+
+    if [ -z "$AWS_AZ" ] || [ -z "$INSTANCE_ID" ]; then
+        logerr "IMDS returned empty metadata (az='${AWS_AZ}' instance-id='${INSTANCE_ID}'); check the instance profile and that IMDS is reachable"
+        return 1
+    fi
 }
 
-function detect_init_system() {
-    # detects the init system in use
-    # based on the following:
-    # https://unix.stackexchange.com/a/164092
-    if [[ `/sbin/init --version` =~ upstart ]]; then echo upstart;
-    elif [[ `systemctl` =~ -\.mount ]]; then echo systemd;
-    elif [[ -f /etc/init.d/cron && ! -h /etc/init.d/cron ]]; then echo sysv-init;
-    else echo unknown; fi
+get_config_value() {
+    local filter="$1"
+    jq -r "$filter" "$EBS_AUTOSCALE_CONFIG_FILE"
 }
 
-function get_config_value() {
-    local filter=$1
-
-    jq -r $filter $EBS_AUTOSCALE_CONFIG_FILE
+# Structured logging. Lines are "<utc-timestamp> <LEVEL> <message>"; errors are
+# also copied to stderr so journald captures them when running under systemd.
+loginfo() {
+    printf '%s INFO %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$EBS_AUTOSCALE_LOG_FILE"
 }
 
-function logthis() {
-    echo "[`date`] $1" >> $(get_config_value .logging.log_file)
+logerr() {
+    printf '%s ERR  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" | tee -a "$EBS_AUTOSCALE_LOG_FILE" >&2
 }
 
-function starting() {
-    logthis "Starting EBS Autoscale"
+# Backwards-compatible alias for the upstream logging function name.
+logthis() {
+    loginfo "$1"
 }
 
-function stopping() {
-    logthis "Stopping EBS Autoscale"
+# retry ATTEMPTS COMMAND [ARG...]
+# Runs COMMAND until it succeeds or ATTEMPTS is reached, with linear backoff.
+# Returns the last command's exit status. Callers that must treat a specific
+# non-zero status as success (e.g. lvresize returning 5) should wrap COMMAND.
+retry() {
+    local attempts="$1"
+    shift
+    local i=1
+    local status=0
+    while :; do
+        if "$@"; then
+            return 0
+        fi
+        status=$?
+        if [ "$i" -ge "$attempts" ]; then
+            return "$status"
+        fi
+        logerr "command failed (status ${status}), attempt ${i}/${attempts}: $*"
+        sleep $(( i * 2 ))
+        i=$(( i + 1 ))
+    done
+}
+
+starting() {
+    loginfo "starting ebs-autoscale"
+}
+
+stopping() {
+    loginfo "stopping ebs-autoscale"
 }
