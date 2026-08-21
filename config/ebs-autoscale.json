@@ -8,10 +8,10 @@
     "volume": {
         "type": "%%VOLUMETYPE%%",
         "iops": "%%VOLUMEIOPS%%",
-        "throughput": "%%VOLUMETHOUGHPUT%%",
-        "encrypted": 1
+        "throughput": "%%VOLUMETHROUGHPUT%%",
+        "encrypted": %%ENCRYPTED%%
     },
-    "detection_interval": 2,
+    "detection_interval": %%DETECTIONINTERVAL%%,
     "limits": {
         "min_ebs_volume_size": "%%MINEBSVOLUMESIZE%%",
         "max_ebs_volume_size": "%%MAXEBSVOLUMESIZE%%",

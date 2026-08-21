@@ -1,11 +1,9 @@
-/var/log/ebs-autoscale.log  {
+/var/log/ebs-autoscale.log {
   daily
   missingok
-  rotate 2
+  rotate 7
   compress
+  delaycompress
   notifempty
   create 0644 root root
-  postrotate
-    service ebs-autoscale restart
-  endscript
 }

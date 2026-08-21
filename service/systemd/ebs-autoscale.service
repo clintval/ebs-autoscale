@@ -1,10 +1,14 @@
 [Unit]
-Description=Amazon EBS Autoscale
+Description=EBS Autoscale
+Wants=network-online.target
 After=network-online.target
+Before=docker.service
 
 [Service]
+Type=simple
 ExecStart=/usr/local/bin/ebs-autoscale
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
