@@ -116,7 +116,7 @@ On the launch template itself, set `EbsOptimized: true` so the scratch volume ge
 
 The installer accepts the following options:
 
-```
+```console
 -m, --mountpoint MOUNTPOINT            Mount point (default: /scratch)
 -s, --initial-size SIZE_GB             Initial volume size (default: 300)
 -d, --initial-device DEVICE            Use an existing block device for the mount
