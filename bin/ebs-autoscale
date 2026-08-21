@@ -1,0 +1,229 @@
+#!/bin/sh
+# Copyright Amazon.com, Inc. or its affiliates.
+#
+#  Redistribution and use in source and binary forms, with or without
+#  modification, are permitted provided that the following conditions are met:
+#
+#  1. Redistributions of source code must retain the above copyright notice,
+#  this list of conditions and the following disclaimer.
+#
+#  2. Redistributions in binary form must reproduce the above copyright
+#  notice, this list of conditions and the following disclaimer in the
+#  documentation and/or other materials provided with the distribution.
+#
+#  3. Neither the name of the copyright holder nor the names of its
+#  contributors may be used to endorse or promote products derived from
+#  this software without specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+#  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+#  BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+#  FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+#  THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+#  INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+#  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+#  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+#  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+#  STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+#  IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+#  POSSIBILITY OF SUCH DAMAGE.
+
+. /usr/local/amazon-ebs-autoscale/shared/utils.sh
+
+initialize
+
+MIN_EBS_VOLUME_SIZE=$(get_config_value .limits.min_ebs_volume_size)
+MAX_EBS_VOLUME_SIZE=$(get_config_value .limits.max_ebs_volume_size)
+MAX_LOGICAL_VOLUME_SIZE=$(get_config_value .limits.max_logical_volume_size)
+MAX_EBS_VOLUME_COUNT=$(get_config_value .limits.max_ebs_volume_count)
+INITIAL_UTILIZATION_THRESHOLD=$(get_config_value .limits.initial_utilization_threshold)
+
+FILE_SYSTEM=$(get_config_value .filesystem)
+
+LVM_VG=$(get_config_value .lvm.volume_group)
+LVM_LV=$(get_config_value .lvm.logical_volume)
+
+MOUNTPOINT=$(get_config_value .mountpoint)
+BASEDIR=$(dirname $0)
+
+starting
+trap "stopping; exit" INT TERM KILL
+
+logthis "EBS Autoscaling mountpoint: ${MOUNTPOINT}"
+logthis "Region = $AWS_REGION"
+logthis "Availability Zone = $AWS_AZ"
+
+# make sure that this device is mounted.
+until [ -d "${MOUNTPOINT}" ]; do
+  sleep 1
+done
+
+get_num_devices() {
+  # This tag is added to all devices attached by this ebs-autoscale in the create-ebs-volume script it's presence indicates
+  # a device that has been added by auto-expansion rather than an EBS volume attached for other reasons or at startup.
+  TAG=amazon-ebs-autoscale-creation-time
+
+  # determine the number of devices attached by ebs-autoscale on this instance. Volumes attached in other ways are
+  # excluded as they aren't relevant to autoscaling
+  local attached_volumes=""
+  local max_attempts=5
+
+  # By waiting until the attached_volumes value is >=0 we will retry with backoff hopefully avoiding request limits
+  # eventually getting a usable value. The >= 0 test is really a test that we got an integer response
+  for i in $(eval echo "{0..$max_attempts}") ; do
+      local attached_volumes_response=""
+
+      attached_volumes_response=$(
+        aws ec2 describe-volumes \
+            --region $AWS_REGION \
+            --filters Name=attachment.instance-id,Values=$INSTANCE_ID Name=tag-key,Values=$TAG
+       )
+
+      attached_volumes=$(echo "$attached_volumes_response" | jq '.Volumes | length')
+      if [ "$attached_volumes" -ge 0 ]; then
+          break
+      fi
+
+      if [ $i -eq $max_attempts ] ; then
+        logthis "Could not determine the number of attached_volumes after $i attempts. Last response was: $attached_volumes_response"
+        break
+      fi
+
+      sleep $(( 2 ** i + $RANDOM %3 ))
+  done
+
+  echo "$attached_volumes"
+}
+
+calc_threshold() {
+  # calculates percent utilization threshold for adding additional ebs volumes
+  # as more ebs volumes are added, the threshold level increases
+
+  local num_devices=$1
+  local threshold=${INITIAL_UTILIZATION_THRESHOLD}
+
+  if [ "$num_devices" -ge "4" ] && [ "$num_devices" -le "6" ]; then
+    threshold=80
+  elif [ "$num_devices" -gt "6" ] && [ "$num_devices" -le "10" ]; then
+    threshold=90
+  elif [ "$num_devices" -gt "10" ]; then
+    threshold=90
+  else
+    threshold=${INITIAL_UTILIZATION_THRESHOLD}
+  fi
+
+  echo ${threshold}
+}
+
+calc_new_size() {
+  # calculates the size to use for new ebs volumes to expand space
+  # new volume sizes increase as the number of attached volumes increase
+  local num_devices=$1
+  #local num_devices=$(get_num_devices)
+  local new_size=$MIN_EBS_VOLUME_SIZE
+
+  if [ "$num_devices" -ge "4" ] && [ "$num_devices" -le "6" ]; then
+    if [ "$MAX_EBS_VOLUME_SIZE" -ge "299" ] && [ "$MIN_EBS_VOLUME_SIZE" -le "299" ]; then
+      new_size=300
+    elif [ "$MIN_EBS_VOLUME_SIZE" -ge "299" ]; then
+      new_size=$MIN_EBS_VOLUME_SIZE
+    else
+      new_size=$MAX_EBS_VOLUME_SIZE
+    fi
+  elif [ "$num_devices" -gt "6" ] && [ "$num_devices" -le "10" ]; then
+    if [ "$MAX_EBS_VOLUME_SIZE" -ge "999" ] && [ "$MIN_EBS_VOLUME_SIZE" -le "999" ]; then
+      new_size=1000
+    elif [ "$MIN_EBS_VOLUME_SIZE" -ge "999" ]; then
+      new_size=$MIN_EBS_VOLUME_SIZE
+    else
+      new_size=$MAX_EBS_VOLUME_SIZE
+    fi
+  elif [ "$num_devices" -gt "10" ]; then
+    new_size=$MAX_EBS_VOLUME_SIZE
+  else
+    if [ "$MAX_EBS_VOLUME_SIZE" -ge "149" ]; then
+      new_size=$MIN_EBS_VOLUME_SIZE
+    else
+      new_size=$MAX_EBS_VOLUME_SIZE
+    fi
+  fi
+
+  echo ${new_size}
+}
+
+add_space () {
+  #local num_devices=$(get_num_devices)
+  local num_devices=$1
+  if [ "${num_devices}" -ge "$MAX_EBS_VOLUME_COUNT" ]; then
+    logthis "No more volumes can be safely added."
+    return 0
+  fi
+
+  local curr_size=$(df -BG ${MOUNTPOINT} | grep ${MOUNTPOINT} | awk '{print $2} ' | cut -d'G' -f1)
+  if [ "${curr_size}" -lt "$MAX_LOGICAL_VOLUME_SIZE" ]; then
+    local vol_size=$(calc_new_size ${num_devices})
+    logthis "Extending logical volume ${MOUNTPOINT} by ${vol_size}GB"
+
+    DEVICE=$(${BASEDIR}/create-ebs-volume --size ${vol_size} --max-attached-volumes ${MAX_EBS_VOLUME_COUNT})
+
+    exit_status=$?
+    if [ $exit_status -eq 0 ]; then
+      if [ "${FILE_SYSTEM}" = "btrfs" ]; then
+        logthis "Adding device ${DEVICE} to logical volume ${MOUNTPOINT}"
+        btrfs device add ${DEVICE} ${MOUNTPOINT}
+        btrfs balance start -m ${MOUNTPOINT}
+      else
+        logthis "Adding device ${DEVICE} to logical volume /dev/mapper/${LVM_VG}-${LVM_LV}"
+        vgextend ${LVM_VG} ${DEVICE}
+        lvresize -l 100%VG /dev/mapper/${LVM_VG}-${LVM_LV}
+        resize2fs /dev/mapper/${LVM_VG}-${LVM_LV}
+      fi
+      logthis "Finished extending logical volume"
+
+    else
+      logthis "Error creating or attaching EBS volume"
+    fi
+
+  else
+    logthis "Maximum volume size ($MAX_LOGICAL_VOLUME_SIZE) reached"
+  fi
+}
+
+# number of event loops between utilization status log lines
+# helps to limit the log file size
+# utilization detection is not affected by this
+LOG_INTERVAL=$(get_config_value .logging.log_interval)
+
+# initialized value for log lines
+# report on first run
+LOG_COUNT=$LOG_INTERVAL
+
+# time in seconds between event loops
+# keep this low so that rapid increases in utilization are detected
+DETECTION_INTERVAL=$(get_config_value .detection_interval)
+# get the number of devices once when the script first starts
+NUM_DEVICES=$(get_num_devices)
+THRESHOLD=$(calc_threshold "${NUM_DEVICES}")
+while true; do
+
+  STATS=$(df -BG  ${MOUNTPOINT} | grep -v Filesystem)
+  TOTAL_SIZE=$(echo ${STATS} | awk '{print $2}')
+  USED=$(echo ${STATS} | awk '{print $3}')
+  AVAILABLE=$(echo ${STATS} | awk '{print $4}')
+  PCT_UTILIZATION=$(echo ${STATS} | awk '{print $5}' | cut -d"%" -f1 -)
+  if  [ $PCT_UTILIZATION -ge "${THRESHOLD}" ]; then
+    # get number of devices only when we need to add more space
+  	NUM_DEVICES=$(get_num_devices)
+    logthis "LOW DISK (${PCT_UTILIZATION}%): Adding more."
+    add_space "$NUM_DEVICES"
+	NUM_DEVICES=$(expr $NUM_DEVICES + 1 )
+    THRESHOLD=$(calc_threshold "$NUM_DEVICES")
+    LOG_COUNT=$LOG_INTERVAL
+  fi
+  if [ "${LOG_COUNT}" -ge "${LOG_INTERVAL}" ]; then
+    logthis "Devices ${NUM_DEVICES} : Size ${TOTAL_SIZE} : Used ${USED} : Available ${AVAILABLE} : Used% ${PCT_UTILIZATION}% : Threshold ${THRESHOLD}%"
+    LOG_COUNT=0
+  fi
+  LOG_COUNT=$(expr $LOG_COUNT + 1 )
+  sleep $DETECTION_INTERVAL
+done
