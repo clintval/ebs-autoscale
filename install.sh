@@ -144,7 +144,7 @@ render_config() {
 render_config
 
 if [ -n "${EBS_AUTOSCALE_RENDER_ONLY:-}" ]; then
-    echo "rendered config to ${EBS_AUTOSCALE_CONFIG_FILE}"
+    echo "rendered config to ${EBS_AUTOSCALE_CONFIG_FILE}" >&2
     exit 0
 fi
 
