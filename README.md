@@ -23,7 +23,7 @@ The utility `ebs-autoscale` keeps a local filesystem from running out of space b
 It is the elastic-scratch building block behind AWS Batch and Nextflow pipelines that write large, unpredictably-sized intermediate files and want them on fast local block storage rather than a network filesystem.
 
 The original project was archived by AWS in 2024 and no longer runs on current AMIs.
-It forks upstream at `v2.4.7`, targets Amazon Linux 2023 on Nitro instances, and additionally folds in the fixes that the community had scattered across forks and unmerged pull requests.
+It forks upstream at `v2.4.7`, targets Amazon Linux 2023 on Nitro instances, and additionally folds in the fixes that were scattered across the community.
 
 ## Quick Start
 
@@ -42,17 +42,13 @@ sh install.sh \
 The installer renders the runtime config, installs the daemon under systemd, creates the first EBS volume, and mounts it at `/scratch`.
 Fill the mount past its threshold and a second volume is created, attached, and folded into the logical volume automatically.
 
-See [AWS Batch / ECS Node Bootstrap](#aws-batch--ecs-node-bootstrap) below for a complete node-bootstrap example.
-
 ## AWS Batch / ECS Node Bootstrap
 
 The common way to use `ebs-autoscale` is from the `UserData` of an EC2 launch template, so every compute node instantiates with an elastic scratch volume.
-Because IMDSv2, Nitro NVMe device resolution, systemd, and `lvm.ext4` are all handled by the installer, the `UserData` is just "download, install, mount", plus the usual ECS node tuning: raise file-descriptor limits and move the Docker data-root onto the scaling partition so image layers and container volumes grow with it.
-
-Drop this straight into the launch template's user-data (it is a standard cloud-init `#cloud-config`):
+IMDSv2, Nitro NVMe device resolution, systemd, and `lvm.ext4` are all handled by the installer.
+The example below additionally contains some common ECS node tuning: raise file-descriptor limits and move the Docker data-root onto the scaling partition so image layers and container volumes grow with it.
 
 ```yaml
-#cloud-config
 output: {all: '| tee -a /var/log/cloud-init-output.log'}
 
 repo_update: true
@@ -75,8 +71,7 @@ runcmd:
   - systemctl stop docker || true
 
   # Install ebs-autoscale from a pinned release and mount /scratch as lvm.ext4.
-  # Pin EBS_AUTOSCALE_VERSION to a tag; do not resolve the latest release at boot.
-  - EBS_AUTOSCALE_VERSION=v1.0.0
+  - EBS_AUTOSCALE_VERSION=1.0.0
   - curl -sL "https://github.com/clintval/ebs-autoscale/archive/refs/tags/${EBS_AUTOSCALE_VERSION}.tar.gz" | tar xz -C /opt/
   - mv "/opt/ebs-autoscale-${EBS_AUTOSCALE_VERSION#v}" /opt/ebs-autoscale
   - sh /opt/ebs-autoscale/install.sh -m /scratch -s 300 -f lvm.ext4 -t gp3 --volume-iops 4000 --volume-throughput 250 > /var/log/ebs-autoscale-install.log 2>&1
@@ -87,8 +82,7 @@ runcmd:
   - sysctl -w fs.file-max=128000
   - sysctl -p
 
-  # Move the Docker data-root onto the scratch partition (AL2023 uses daemon.json,
-  # not the Amazon Linux 2 /etc/sysconfig/docker OPTIONS= form).
+  # Move the Docker data-root onto the scratch partition.
   - mkdir -p /scratch/docker && mv /var/lib/docker/* /scratch/docker/ 2>/dev/null || true
   - mkdir -p /etc/docker
   - echo '{"data-root":"/scratch/docker"}' > /etc/docker/daemon.json
@@ -101,15 +95,6 @@ runcmd:
 
 On the launch template itself, set `EbsOptimized: true` so the scratch volume gets dedicated EBS bandwidth, give it a small gp3 root volume (the scratch mount grows separately), and attach an `IamInstanceProfile` whose role has the [permissions below](#iam-permissions).
 
-## Features
-
-- **Amazon Linux 2023 and Nitro first.** Resolves the real `/dev/nvme*n1` device by its EBS volume serial, so it works on current-generation instances where the legacy `/dev/xvdb*` symlinks are unreliable.
-- **IMDSv2 always.** No opt-in flag; works on instances that require metadata tokens.
-- **lvm.ext4 only.** One well-tested path; btrfs is gone because it is unavailable in the AL2023 default repositories.
-- **Does not leak volumes.** A volume that fails to become available or attach is deleted, and `DeleteOnTermination` is retried, so interrupted boots do not strand paid-for EBS.
-- **systemd native.** Ships a hardened unit and starts it with `--no-block` so a cloud-init boothook cannot deadlock the boot.
-- **Tested.** `shellcheck -x` plus a `shellspec` suite that needs no AWS account.
-
 ## Supported Platforms
 
 | OS | Status |
@@ -118,32 +103,29 @@ On the launch template itself, set `EbsOptimized: true` so the scratch volume ge
 | Amazon Linux 2 | Untested; likely works (systemd, `yum`/`dnf`) but not exercised |
 | Amazon Linux 1, Ubuntu, CentOS | Unsupported |
 
-Only Amazon Linux 2023 is a supported target.
-The code avoids AL2023-only syntax, so Amazon Linux 2 will most likely work, but it is not tested and not a claim.
 
 ## Configuration
 
 The installer accepts the following options:
 
 ```
--m, --mountpoint MOUNTPOINT          Mount point (default: /scratch)
--s, --initial-size SIZE_GB           Initial volume size (default: 300)
--d, --initial-device DEVICE          Use an existing block device for the mount
--f, --file-system lvm.ext4           Filesystem (only lvm.ext4 is supported)
--t, --volume-type VOLUMETYPE         EBS volume type (default: gp3)
-    --volume-iops N                  IOPS for gp3/io1/io2 (default: 3000)
-    --volume-throughput N            Throughput MiB/s for gp3 (default: 125)
-    --min-ebs-volume-size SIZE_GB    Min size of new volumes (default: 150)
-    --max-ebs-volume-size SIZE_GB    Max size of new volumes (default: 1500)
-    --max-total-created-size SIZE_GB Max total created size (default: 8000)
-    --max-attached-volumes N         Max attached volumes (default: 16)
+-m, --mountpoint MOUNTPOINT            Mount point (default: /scratch)
+-s, --initial-size SIZE_GB             Initial volume size (default: 300)
+-d, --initial-device DEVICE            Use an existing block device for the mount
+-f, --file-system lvm.ext4             Filesystem (only lvm.ext4 is supported)
+-t, --volume-type VOLUMETYPE           EBS volume type (default: gp3)
+    --volume-iops N                    IOPS for gp3/io1/io2 (default: 3000)
+    --volume-throughput N              Throughput MiB/s for gp3 (default: 125)
+    --min-ebs-volume-size SIZE_GB      Min size of new volumes (default: 150)
+    --max-ebs-volume-size SIZE_GB      Max size of new volumes (default: 1500)
+    --max-total-created-size SIZE_GB   Max total created size (default: 8000)
+    --max-attached-volumes N           Max attached volumes (default: 16)
     --initial-utilization-threshold N  Scale-up threshold percent (default: 50)
-    --not-encrypted                  Create unencrypted volumes
+    --not-encrypted                    Create unencrypted volumes
 ```
 
 The runtime config is written to `/etc/ebs-autoscale.json`; override the path with `EBS_AUTOSCALE_CONFIG_FILE`.
 Set `EBS_AUTOSCALE_RENDER_ONLY=1` to render the config and exit without installing, which is useful for review.
-
 The mount point is created world-writable with the sticky bit (`chmod 1777`), so any user may create files there but only remove their own, matching how a shared scratch area is used.
 
 > [!TIP]
@@ -178,26 +160,10 @@ The instance profile needs the following actions:
 }
 ```
 
-`ec2:DetachVolume` is required by `uninstall.sh` and was missing from the upstream policy.
 If you encrypt volumes with a customer-managed KMS key, also grant the instance role the usual `kms:CreateGrant`, `kms:GenerateDataKeyWithoutPlaintext`, and `kms:Decrypt` on that key.
 
 > [!NOTE]
 > `"Resource": "*"` is broad. It can be tightened with `ec2:ResourceTag`/`aws:RequestTag` conditions keyed on the `source-instance` tag this tool writes; that hardening is left to the operator.
-
-## Differences from Upstream
-
-This fork starts from `v2.4.7` and re-applies the good parts of the later, never-released IMDSv2 work by hand.
-Each change is tied to the upstream issue it resolves:
-
-- Resolve the real NVMe device by volume serial rather than waiting on a `/dev/xvdb*` symlink that never appears on Nitro ([#41](https://github.com/awslabs/amazon-ebs-autoscale/issues/41)).
-- Always use IMDSv2 with a real token header, and fail loudly on a metadata 401 instead of silently proceeding with an empty region ([#63](https://github.com/awslabs/amazon-ebs-autoscale/issues/63), [#71](https://github.com/awslabs/amazon-ebs-autoscale/issues/71)).
-- Delete a volume that fails to become available or attach, and retry `DeleteOnTermination`, so interrupted boots stop leaking volumes ([#30](https://github.com/awslabs/amazon-ebs-autoscale/issues/30)).
-- Detect systemd with `/run/systemd/system` instead of a fragile heuristic that returned "unknown" on AL2023 ([#66](https://github.com/awslabs/amazon-ebs-autoscale/issues/66)).
-- Start the service with `--no-block` so a cloud-init boothook cannot deadlock the boot ([#13](https://github.com/awslabs/amazon-ebs-autoscale/issues/13)).
-- Export the config path before it is read, fixing the empty-volume-group install failure on later upstream commits ([#75](https://github.com/awslabs/amazon-ebs-autoscale/issues/75)).
-- Build tag specifications with `jq` so tag values with spaces or metacharacters cannot corrupt the request ([#33](https://github.com/awslabs/amazon-ebs-autoscale/issues/33)), fix the trailing-slash and wrapped-`df` detection bugs ([#49](https://github.com/awslabs/amazon-ebs-autoscale/issues/49)), and correct the throughput config typo ([#59](https://github.com/awslabs/amazon-ebs-autoscale/pull/59)).
-
-These fixes draw on the `myome`, `arvados`, `codeocean`, and `nubank` forks; see [`NOTICE`](NOTICE).
 
 ## Development and Testing
 
