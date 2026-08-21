@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# End-to-end test for ebs-autoscale on a real Amazon Linux 2023 instance.
+#
+# Launches one EC2 instance, installs ebs-autoscale from the committed HEAD of
+# this repository (shipped to the instance through a throwaway S3 object), fills
+# /scratch past its utilization threshold, and asserts that the filesystem grew
+# and a second EBS volume was attached. It then terminates the instance and
+# asserts that no autoscale volume was left behind, which is the real test of
+# the DeleteOnTermination handling. Every resource is ephemeral and torn down
+# on exit.
+#
+# This creates real AWS resources (one instance, a couple of small EBS volumes,
+# an IAM role, a security group, and an S3 object) and costs a few cents per run.
+#
+# Requires: aws (v2), jq, git. Uses your default AWS credentials and region.
+#
+# Run:
+#   EBS_AUTOSCALE_E2E=1 bash scripts/e2e.sh
+#
+# Environment overrides:
+#   AWS_REGION          Region to run in (default: your profile's, else us-west-2)
+#   E2E_INSTANCE_TYPE   Instance type (default: m5.large)
+#   E2E_INITIAL_GB      Initial scratch volume size in GB (default: 10)
+#   E2E_KEEP            If set, skip teardown so you can inspect the instance
+#   E2E_BUCKET          Reuse this S3 bucket instead of creating a throwaway one
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ -z "${EBS_AUTOSCALE_E2E:-}" ]]; then
+  echo "Refusing to run: this launches real AWS resources and costs money." >&2
+  echo "Re-run with EBS_AUTOSCALE_E2E=1 to proceed." >&2
+  exit 2
+fi
+
+for tool in aws jq git; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "error: '$tool' not found on PATH" >&2; exit 1; }
+done
+
+REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo us-west-2)}"
+INSTANCE_TYPE="${E2E_INSTANCE_TYPE:-m5.large}"
+INITIAL_GB="${E2E_INITIAL_GB:-10}"
+RUN_ID="ebs-autoscale-e2e-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
+
+log() { printf '[e2e] %s\n' "$*" >&2; }
+die() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit 1; }
+
+# Populated as resources are created; cleanup tears them down in reverse.
+INSTANCE_ID=""
+SG_ID=""
+ROLE_NAME=""
+PROFILE_NAME=""
+BUCKET=""
+BUCKET_CREATED=""
+S3_KEY=""
+TARBALL=""
+
+cleanup() {
+  local code=$?
+  if [[ -n "${E2E_KEEP:-}" ]]; then
+    log "E2E_KEEP set; leaving resources up. instance=$INSTANCE_ID sg=$SG_ID role=$ROLE_NAME bucket=$BUCKET"
+    return
+  fi
+  log "tearing down"
+  if [[ -n "$INSTANCE_ID" ]]; then
+    aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null 2>&1 || true
+    aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$PROFILE_NAME" ]]; then
+    aws iam remove-role-from-instance-profile --instance-profile-name "$PROFILE_NAME" --role-name "$ROLE_NAME" >/dev/null 2>&1 || true
+    aws iam delete-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$ROLE_NAME" ]]; then
+    aws iam detach-role-policy --role-name "$ROLE_NAME" --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null 2>&1 || true
+    aws iam delete-role-policy --role-name "$ROLE_NAME" --policy-name inline >/dev/null 2>&1 || true
+    aws iam delete-role --role-name "$ROLE_NAME" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$SG_ID" ]]; then
+    aws ec2 delete-security-group --region "$REGION" --group-id "$SG_ID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$BUCKET" && -n "$S3_KEY" ]]; then
+    aws s3 rm "s3://${BUCKET}/${S3_KEY}" --region "$REGION" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$BUCKET_CREATED" ]]; then
+    aws s3 rb "s3://${BUCKET}" --region "$REGION" >/dev/null 2>&1 || true
+  fi
+  [[ -n "$TARBALL" && -f "$TARBALL" ]] && rm -f "$TARBALL"
+  log "teardown complete"
+  exit "$code"
+}
+trap cleanup EXIT
+
+# Run a shell command on the instance via SSM and print its stdout. Waits for
+# the invocation to finish and fails the test if the command errored.
+ssm_run() {
+  local cmd="$1" cid status
+  cid="$(aws ssm send-command \
+    --region "$REGION" \
+    --instance-ids "$INSTANCE_ID" \
+    --document-name AWS-RunShellScript \
+    --comment "$RUN_ID" \
+    --parameters "commands=[$(jq -Rn --arg c "$cmd" '$c')]" \
+    --query 'Command.CommandId' --output text)"
+  local i
+  for ((i = 0; i < 60; i++)); do
+    status="$(aws ssm get-command-invocation --region "$REGION" \
+      --command-id "$cid" --instance-id "$INSTANCE_ID" \
+      --query 'Status' --output text 2>/dev/null || echo Pending)"
+    case "$status" in
+      Success) aws ssm get-command-invocation --region "$REGION" \
+                 --command-id "$cid" --instance-id "$INSTANCE_ID" \
+                 --query 'StandardOutputContent' --output text; return 0 ;;
+      Failed|Cancelled|TimedOut) die "SSM command '$cmd' -> $status" ;;
+    esac
+    sleep 5
+  done
+  die "SSM command '$cmd' did not finish in time"
+}
+
+owned_volume_count() {
+  aws ec2 describe-volumes --region "$REGION" \
+    --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
+    --query 'length(Volumes)' --output text
+}
+
+log "region=$REGION type=$INSTANCE_TYPE run=$RUN_ID"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+
+AMI_ID="$(aws ssm get-parameter --region "$REGION" \
+  --name /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id \
+  --query 'Parameter.Value' --output text)"
+log "ami=$AMI_ID"
+
+VPC_ID="$(aws ec2 describe-vpcs --region "$REGION" \
+  --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
+[[ "$VPC_ID" != "None" ]] || die "no default VPC in $REGION; set one up or run elsewhere"
+SUBNET_ID="$(aws ec2 describe-subnets --region "$REGION" \
+  --filters "Name=vpc-id,Values=${VPC_ID}" Name=default-for-az,Values=true \
+  --query 'Subnets[0].SubnetId' --output text)"
+[[ "$SUBNET_ID" != "None" ]] || die "no default subnet in $VPC_ID"
+
+# Ship the committed HEAD to the instance via S3.
+BUCKET="${E2E_BUCKET:-${RUN_ID}-${ACCOUNT_ID}}"
+S3_KEY="${RUN_ID}.tar.gz"
+TARBALL="$(mktemp -t ebs-autoscale-e2e).tar.gz"
+git -C "$REPO" archive --format=tar.gz -o "$TARBALL" HEAD
+if [[ -z "${E2E_BUCKET:-}" ]]; then
+  aws s3 mb "s3://${BUCKET}" --region "$REGION" >/dev/null
+  BUCKET_CREATED=1
+fi
+aws s3 cp "$TARBALL" "s3://${BUCKET}/${S3_KEY}" --region "$REGION" >/dev/null
+log "uploaded code to s3://${BUCKET}/${S3_KEY}"
+
+# IAM role: ebs-autoscale EC2 permissions + read of our object + SSM.
+ROLE_NAME="$RUN_ID"
+PROFILE_NAME="$RUN_ID"
+aws iam create-role --role-name "$ROLE_NAME" \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' >/dev/null
+aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name inline \
+  --policy-document "$(cat <<JSON
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow",
+      "Action": ["ec2:AttachVolume","ec2:DetachVolume","ec2:CreateVolume","ec2:DeleteVolume","ec2:CreateTags","ec2:DescribeVolumes","ec2:DescribeVolumeStatus","ec2:DescribeVolumeAttribute","ec2:DescribeTags","ec2:ModifyInstanceAttribute"],
+      "Resource": "*" },
+    { "Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::${BUCKET}/${S3_KEY}" }
+  ]
+}
+JSON
+)"
+aws iam attach-role-policy --role-name "$ROLE_NAME" \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null
+aws iam create-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null
+aws iam add-role-to-instance-profile --instance-profile-name "$PROFILE_NAME" --role-name "$ROLE_NAME" >/dev/null
+log "created role/profile $ROLE_NAME; waiting for IAM propagation"
+sleep 15
+
+SG_ID="$(aws ec2 create-security-group --region "$REGION" \
+  --group-name "$RUN_ID" --description "ebs-autoscale e2e ($RUN_ID)" \
+  --vpc-id "$VPC_ID" --query 'GroupId' --output text)"
+log "security group $SG_ID (egress-only; SSM needs no inbound)"
+
+USER_DATA="$(cat <<UD
+#!/bin/bash
+set -euxo pipefail
+dnf install -y jq unzip lvm2 tar
+curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install -b /usr/bin
+aws s3 cp "s3://${BUCKET}/${S3_KEY}" /tmp/ebs-autoscale.tar.gz --region ${REGION}
+mkdir -p /opt/ebs-autoscale
+tar xzf /tmp/ebs-autoscale.tar.gz -C /opt/ebs-autoscale
+sh /opt/ebs-autoscale/sbin/install.sh -m /scratch -s ${INITIAL_GB} -f lvm.ext4 -t gp3 \
+  --min-ebs-volume-size ${INITIAL_GB} --max-ebs-volume-size ${INITIAL_GB} \
+  --initial-utilization-threshold 50 > /var/log/ebs-autoscale-install.log 2>&1
+touch /var/lib/ebs-autoscale-e2e-installed
+UD
+)"
+
+INSTANCE_ID="$(aws ec2 run-instances --region "$REGION" \
+  --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
+  --subnet-id "$SUBNET_ID" --security-group-ids "$SG_ID" \
+  --iam-instance-profile "Name=${PROFILE_NAME}" \
+  --user-data "$USER_DATA" \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${RUN_ID}}]" \
+  --query 'Instances[0].InstanceId' --output text)"
+log "launched instance $INSTANCE_ID; waiting for it to run"
+aws ec2 wait instance-running --region "$REGION" --instance-ids "$INSTANCE_ID"
+
+log "waiting for SSM registration"
+for ((i = 0; i < 40; i++)); do
+  ping="$(aws ssm describe-instance-information --region "$REGION" \
+    --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+    --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo None)"
+  [[ "$ping" == "Online" ]] && break
+  sleep 15
+done
+[[ "${ping:-None}" == "Online" ]] || die "instance never registered with SSM"
+
+log "waiting for the install to finish"
+# shellcheck disable=SC2016  # expands on the instance, not here
+ssm_run 'for i in $(seq 60); do [ -f /var/lib/ebs-autoscale-e2e-installed ] && exit 0; sleep 5; done; echo "install marker missing"; cat /var/log/ebs-autoscale-install.log 2>/dev/null; exit 1' >/dev/null
+
+initial_size="$(ssm_run 'df -B1 --output=size /scratch | tail -n1 | tr -d " "')"
+initial_count="$(owned_volume_count)"
+log "installed: /scratch size=${initial_size}B, owned volumes=${initial_count}"
+[[ "$initial_count" -ge 1 ]] || die "no autoscale volume after install"
+
+log "filling /scratch past the threshold"
+ssm_run "fallocate -l $(( INITIAL_GB * 8 / 10 ))G /scratch/e2e.fill" >/dev/null
+
+log "waiting for the filesystem to grow"
+grew=""
+for ((i = 0; i < 24; i++)); do
+  cur="$(ssm_run 'df -B1 --output=size /scratch | tail -n1 | tr -d " "')"
+  if [[ "$cur" -gt "$initial_size" ]]; then grew="$cur"; break; fi
+  sleep 5
+done
+[[ -n "$grew" ]] || die "/scratch did not grow (still ${initial_size}B)"
+final_count="$(owned_volume_count)"
+log "grew: /scratch size=${grew}B, owned volumes=${final_count}"
+[[ "$final_count" -ge 2 ]] || die "expected >=2 autoscale volumes after growth, got ${final_count}"
+
+log "terminating and checking for leaked volumes"
+aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null
+aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID"
+leaked="$(aws ec2 describe-volumes --region "$REGION" \
+  --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" "Name=status,Values=available,in-use" \
+  --query 'length(Volumes)' --output text)"
+INSTANCE_ID=""  # already terminated; keep cleanup from re-terminating
+[[ "$leaked" == "0" ]] || die "$leaked autoscale volume(s) leaked after termination"
+
+log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), no leaks"
