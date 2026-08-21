@@ -1,0 +1,22 @@
+ebs-autoscale
+
+This project is a hard fork of awslabs/amazon-ebs-autoscale, which was
+archived by AWS on 2024-05-17. It is not an AWS project and is not endorsed
+or supported by Amazon Web Services.
+
+Fork point: awslabs/amazon-ebs-autoscale tag v2.4.7 (a55e7cc).
+
+Licensing:
+  - The repository is distributed under the MIT License (see LICENSE).
+  - Original code is Copyright Amazon.com, Inc. or its affiliates.
+  - Modifications are Copyright © 2026 Clint Valentine.
+  - install.sh, bin/ebs-autoscale, bin/create-ebs-volume, and shared/utils.sh
+    carry a 3-clause BSD header from the original authors; that notice is
+    retained in those files as required, independent of the MIT license above.
+
+Adopted fixes incorporate work from the following downstream forks and pull
+requests, credited per-commit:
+  - Adam Lavertu (Myome)            NVMe device resolution, systemd detection
+  - Peter Amstutz (Curii/Arvados)   NVMe serial matching, umask hardening
+  - Code Ocean contributors         tag-handling rewrite
+  - Nubank contributors             orphaned-volume cleanup, log structure
