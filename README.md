@@ -111,7 +111,6 @@ On the launch template itself, set `EbsOptimized: true` so the scratch volume ge
 | Amazon Linux 2 | Untested; likely works (systemd, `yum`/`dnf`) but not exercised |
 | Amazon Linux 1, Ubuntu, CentOS | Unsupported |
 
-
 ## Configuration
 
 The installer accepts the following options:
