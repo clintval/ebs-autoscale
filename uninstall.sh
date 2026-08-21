@@ -1,50 +1,58 @@
-#!/bin/bash
+#!/bin/sh
+# Copyright Amazon.com, Inc. or its affiliates.
+# Copyright © 2026 Clint Valentine (modifications).
+#
+# Stops and removes the ebs-autoscale service, unmounts the filesystem, and
+# detaches and deletes every EBS volume this instance created. Amazon Linux
+# 2023, systemd only.
 
-set -x
+# 'local' is supported by dash and bash, the shells this runs under on AL2023.
+# shellcheck disable=SC3043
 
-BASEDIR=$(dirname $0)
+set -eu
 
-. ${BASEDIR}/shared/utils.sh
+PREFIX=/usr/local/ebs-autoscale
+BASEDIR=$(cd "$(dirname "$0")" && pwd)
+: "${EBS_AUTOSCALE_CONFIG_FILE:=/etc/ebs-autoscale.json}"
+export EBS_AUTOSCALE_CONFIG_FILE
+
+if [ -f "${PREFIX}/shared/utils.sh" ]; then
+    # shellcheck source=shared/utils.sh
+    . "${PREFIX}/shared/utils.sh"
+else
+    # shellcheck source=shared/utils.sh
+    . "${BASEDIR}/shared/utils.sh"
+fi
 initialize
 
 MOUNTPOINT=$(get_config_value .mountpoint)
-instance_id=$(get_metadata instance-id)
-availability_zone=$(get_metadata placement/availability-zone)
-region=${availability_zone%?}
 
-# stop and uninstall the service
-INIT_SYSTEM=$(detect_init_system 2>/dev/null)
-case $INIT_SYSTEM in
-  upstart|systemd)
-    echo "$INIT_SYSTEM detected"
-    cd ${BASEDIR}/service/$INIT_SYSTEM
-    . ./uninstall.sh
-    ;;
+# Stop and remove the systemd unit.
+if [ -d /run/systemd/system ]; then
+    ( cd "${BASEDIR}/service/systemd" && sh uninstall.sh )
+else
+    echo "warning: systemd not detected; skipping service removal" >&2
+fi
 
-  *)
-    echo "Could not uninstall EBS Autoscale - unsupported init system"
-    exit 1
-esac
+# Unmount the filesystem if mounted.
+if mountpoint -q "$MOUNTPOINT" 2>/dev/null || mount | grep -q " ${MOUNTPOINT} "; then
+    umount "$MOUNTPOINT" || echo "warning: could not unmount ${MOUNTPOINT}" >&2
+fi
 
-# unmount the file system
-umount $MOUNTPOINT
-
-# detach and delete volumes
-attached_volumes=$(
+# Detach and delete every volume this instance created.
+created_volumes=$(
     aws ec2 describe-volumes \
-        --region $region \
-        --filters "Name=tag:source-instance,Values=$instance_id" \
+        --region "$AWS_REGION" \
+        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
         --query 'Volumes[].VolumeId' \
         --output text
 )
 
-for volume in $attached_volumes; do
-    aws ec2 detach-volume --region $region --volume-id $volume
-    aws ec2 wait volume-available --region $region --volume-ids $volume
-    echo "volume $volume detached"
-    
-    aws ec2 delete-volume --region $region --volume-id $volume
-    aws ec2 wait volume-deleted --region $region --volume-ids $volume
-    echo "volume $volume deleted"  
+for volume in $created_volumes; do
+    aws ec2 detach-volume --region "$AWS_REGION" --volume-id "$volume" >/dev/null
+    aws ec2 wait volume-available --region "$AWS_REGION" --volume-ids "$volume"
+    loginfo "volume ${volume} detached"
+    aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$volume"
+    aws ec2 wait volume-deleted --region "$AWS_REGION" --volume-ids "$volume"
+    loginfo "volume ${volume} deleted"
 done
-
