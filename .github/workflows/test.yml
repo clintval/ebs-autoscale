@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run the shellspec suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install shellspec
+        run: |
+          git clone --depth 1 --branch 0.28.1 https://github.com/shellspec/shellspec /tmp/shellspec
+          echo "/tmp/shellspec" >> "$GITHUB_PATH"
+      - name: Run the specs
+        run: make test-sh
