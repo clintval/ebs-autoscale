@@ -14,7 +14,7 @@ Autoscaling EBS-backed scratch storage for Amazon Linux 2023.
 Install and mount an autoscaling `/scratch` volume with a single command:
 
 ```console
-sh install.sh -m /scratch -s 300 -f lvm.ext4 -t gp3
+sh sbin/install.sh -m /scratch -s 300 -f lvm.ext4 -t gp3
 ```
 
 ## Introduction
@@ -30,7 +30,7 @@ It forks upstream at `v2.4.7`, targets Amazon Linux 2023 on Nitro instances, and
 Install onto an Amazon Linux 2023 instance whose profile has the [required permissions](#iam-permissions):
 
 ```bash
-sh install.sh \
+sh sbin/install.sh \
     -m /scratch \
     -s 300 \
     -f lvm.ext4 \
@@ -74,7 +74,15 @@ runcmd:
   - EBS_AUTOSCALE_VERSION=1.0.0
   - curl -sL "https://github.com/clintval/ebs-autoscale/archive/refs/tags/${EBS_AUTOSCALE_VERSION}.tar.gz" | tar xz -C /opt/
   - mv "/opt/ebs-autoscale-${EBS_AUTOSCALE_VERSION#v}" /opt/ebs-autoscale
-  - sh /opt/ebs-autoscale/install.sh -m /scratch -s 300 -f lvm.ext4 -t gp3 --volume-iops 4000 --volume-throughput 250 > /var/log/ebs-autoscale-install.log 2>&1
+  - >-
+    sh /opt/ebs-autoscale/sbin/install.sh
+    -m /scratch
+    -s 300
+    -f lvm.ext4
+    -t gp3
+    --volume-iops 4000
+    --volume-throughput 250
+    > /var/log/ebs-autoscale-install.log 2>&1
 
   # Raise file-descriptor limits for container-heavy workloads.
   - echo "* soft nofile 64000" >> /etc/security/limits.conf

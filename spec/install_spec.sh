@@ -2,13 +2,13 @@
 Describe 'install.sh argument handling and config rendering'
   run_install() {
     EBS_AUTOSCALE_RENDER_ONLY=1 EBS_AUTOSCALE_CONFIG_FILE="$CFG" \
-      sh "$(script_path install.sh)" "$@"
+      sh "$(script_path sbin/install.sh)" "$@"
   }
   setup() { CFG="${SHELLSPEC_TMPBASE}/cfg.json"; rm -f "$CFG"; }
   Before 'setup'
 
   It 'prints help and exits without root or an instance'
-    When run sh "$(script_path install.sh)" --help
+    When run sh "$(script_path sbin/install.sh)" --help
     The status should be success
     The output should include 'Install ebs-autoscale'
   End

@@ -38,7 +38,7 @@
 set -eu
 
 PREFIX=/usr/local/ebs-autoscale
-BASEDIR=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 : "${EBS_AUTOSCALE_CONFIG_FILE:=/etc/ebs-autoscale.json}"
 
 MOUNTPOINT=/scratch
@@ -138,7 +138,7 @@ render_config() {
         -e "s#%%MAXLOGICALVOLUMESIZE%%#${MAX_LOGICAL_VOLUME_SIZE}#" \
         -e "s#%%MAXATTACHEDVOLUMES%%#${MAX_ATTACHED_VOLUMES}#" \
         -e "s#%%INITIALUTILIZATIONTHRESHOLD%%#${INITIAL_UTILIZATION_THRESHOLD}#" \
-        "${BASEDIR}/config/ebs-autoscale.json" > "$EBS_AUTOSCALE_CONFIG_FILE"
+        "${ROOT}/config/ebs-autoscale.json" > "$EBS_AUTOSCALE_CONFIG_FILE"
 }
 
 render_config
@@ -150,20 +150,20 @@ fi
 
 export EBS_AUTOSCALE_CONFIG_FILE
 # shellcheck source=shared/utils.sh
-. "${BASEDIR}/shared/utils.sh"
+. "${ROOT}/shared/utils.sh"
 
 # Install executables and shared code with explicit modes so a restrictive
 # umask (as in a cloud-init boothook) cannot make them unreadable.
 mkdir -p "${PREFIX}/bin" "${PREFIX}/shared"
-cp "${BASEDIR}/bin/create-ebs-volume" "${PREFIX}/bin/create-ebs-volume"
-cp "${BASEDIR}/bin/ebs-autoscale" "${PREFIX}/bin/ebs-autoscale"
+cp "${ROOT}/bin/create-ebs-volume" "${PREFIX}/bin/create-ebs-volume"
+cp "${ROOT}/bin/ebs-autoscale" "${PREFIX}/bin/ebs-autoscale"
 chmod 755 "${PREFIX}/bin/create-ebs-volume" "${PREFIX}/bin/ebs-autoscale"
-cp "${BASEDIR}/shared/utils.sh" "${PREFIX}/shared/utils.sh"
+cp "${ROOT}/shared/utils.sh" "${PREFIX}/shared/utils.sh"
 chmod 644 "${PREFIX}/shared/utils.sh"
 ln -sf "${PREFIX}/bin/create-ebs-volume" /usr/local/bin/create-ebs-volume
 ln -sf "${PREFIX}/bin/ebs-autoscale" /usr/local/bin/ebs-autoscale
 
-cp "${BASEDIR}/config/ebs-autoscale.logrotate" /etc/logrotate.d/ebs-autoscale
+cp "${ROOT}/config/ebs-autoscale.logrotate" /etc/logrotate.d/ebs-autoscale
 chmod 644 /etc/logrotate.d/ebs-autoscale
 chmod 644 "$EBS_AUTOSCALE_CONFIG_FILE"
 
@@ -198,4 +198,10 @@ if [ ! -d /run/systemd/system ]; then
     echo "error: systemd is required (no /run/systemd/system); only Amazon Linux 2023 with systemd is supported" >&2
     exit 1
 fi
-( cd "${BASEDIR}/service/systemd" && sh install.sh )
+cp "${ROOT}/service/systemd/ebs-autoscale.service" /etc/systemd/system/ebs-autoscale.service
+chmod 644 /etc/systemd/system/ebs-autoscale.service
+systemctl daemon-reload
+systemctl enable ebs-autoscale.service
+# --no-block so starting from a cloud-init runcmd/boothook does not deadlock the
+# same systemd transaction cloud-init is part of.
+systemctl start --no-block ebs-autoscale.service

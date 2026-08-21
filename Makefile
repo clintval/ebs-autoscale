@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
-SCRIPTS := install.sh uninstall.sh bin/create-ebs-volume bin/ebs-autoscale \
-           shared/utils.sh service/systemd/install.sh service/systemd/uninstall.sh
+SCRIPTS := sbin/install.sh sbin/uninstall.sh bin/create-ebs-volume bin/ebs-autoscale \
+           shared/utils.sh
 SPECS := spec/*.sh
 
 .PHONY: all
@@ -17,7 +17,7 @@ test-sh:
 
 .PHONY: install
 install:
-	sh install.sh $(ARGS)
+	sh sbin/install.sh $(ARGS)
 
 .PHONY: clean
 clean:

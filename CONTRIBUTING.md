@@ -28,7 +28,7 @@ Render the runtime config from the installer without root or an instance:
 
 ```bash
 EBS_AUTOSCALE_RENDER_ONLY=1 EBS_AUTOSCALE_CONFIG_FILE=/dev/stdout \
-    sh install.sh -m /scratch -s 300 -f lvm.ext4 \
+    sh sbin/install.sh -m /scratch -s 300 -f lvm.ext4 \
     | jq empty /dev/stdin
 ```
 

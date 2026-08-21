@@ -12,7 +12,7 @@
 set -eu
 
 PREFIX=/usr/local/ebs-autoscale
-BASEDIR=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 : "${EBS_AUTOSCALE_CONFIG_FILE:=/etc/ebs-autoscale.json}"
 export EBS_AUTOSCALE_CONFIG_FILE
 
@@ -21,7 +21,7 @@ if [ -f "${PREFIX}/shared/utils.sh" ]; then
     . "${PREFIX}/shared/utils.sh"
 else
     # shellcheck source=shared/utils.sh
-    . "${BASEDIR}/shared/utils.sh"
+    . "${ROOT}/shared/utils.sh"
 fi
 initialize
 
@@ -29,7 +29,10 @@ MOUNTPOINT=$(get_config_value .mountpoint)
 
 # Stop and remove the systemd unit.
 if [ -d /run/systemd/system ]; then
-    ( cd "${BASEDIR}/service/systemd" && sh uninstall.sh )
+    systemctl stop ebs-autoscale.service || true
+    systemctl disable ebs-autoscale.service || true
+    rm -f /etc/systemd/system/ebs-autoscale.service
+    systemctl daemon-reload
 else
     echo "warning: systemd not detected; skipping service removal" >&2
 fi
