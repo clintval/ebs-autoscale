@@ -27,6 +27,7 @@ It forks upstream at `v2.4.7`, targets Amazon Linux 2023 on Nitro instances, and
 
 ## Quick Start
 
+The scripts require the AWS CLI v2 (`aws`), `jq`, and `curl` on the `PATH`, plus `lvm2` for the `lvm.ext4` filesystem.
 Install onto an Amazon Linux 2023 instance whose profile has the [required permissions](#iam-permissions):
 
 ```bash
