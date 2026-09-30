@@ -169,13 +169,14 @@ grow_filesystem() {
 }
 
 # add_space NUM_DEVICES: create one volume and extend the filesystem onto it.
+# Returns 0 on success, 2 if a limit forbids growing, 1 if growing failed.
 add_space() {
     local num_devices="$1"
     local autoscaled_gb
     autoscaled_gb=$(get_autoscaled_size_gb)
     if ! can_grow "$num_devices" "$autoscaled_gb"; then
         loginfo "not growing: devices=${num_devices}/${MAX_EBS_VOLUME_COUNT} autoscaled=${autoscaled_gb}/${MAX_LOGICAL_VOLUME_SIZE}GB"
-        return 0
+        return 2
     fi
     local vol_size device
     vol_size=$(calc_new_size "$num_devices")
@@ -193,6 +194,66 @@ add_space() {
     fi
 }
 
+# Daemon state: the attached autoscaled volume count and the utilization
+# percent that triggers the next grow.
+NUM_DEVICES=0
+THRESHOLD=0
+
+# After a failed grow the next attempt waits GROW_RETRY_DELAY seconds, doubling
+# from GROW_RETRY_MIN_DELAY to GROW_RETRY_MAX_DELAY, so a persistent failure
+# (permissions, capacity, a quota) does not hit the EC2 API on every tick. A
+# limit that forbids growing waits GROW_RETRY_MAX_DELAY, as the limit may lift
+# (a volume from a failed grow is still counted until EC2 finishes deleting it).
+GROW_RETRY_MIN_DELAY=10
+GROW_RETRY_MAX_DELAY=300
+GROW_RETRY_DELAY=0
+NEXT_GROW_ATTEMPT=0
+
+# Seconds on a monotonic clock, unaffected by chrony stepping the wall clock at
+# boot. Overridable so the backoff can be tested without waiting.
+now_seconds() {
+    local uptime
+    read -r uptime _ < /proc/uptime
+    printf '%s' "${uptime%.*}"
+}
+
+# attempt_grow PCT: called when utilization (PCT) is over the threshold.
+# Updates the globals NUM_DEVICES and THRESHOLD after a successful grow.
+# Returns 0 if EC2 was consulted and 1 if skipped (backing off).
+attempt_grow() {
+    local pct="$1"
+    local now
+    now=$(now_seconds)
+    [ "$now" -ge "$NEXT_GROW_ATTEMPT" ] || return 1
+
+    NUM_DEVICES=$(get_num_devices)
+    loginfo "low disk (${pct}%)"
+    local status=0
+    add_space "$NUM_DEVICES" || status=$?
+    case "$status" in
+        0)
+            NUM_DEVICES=$(( NUM_DEVICES + 1 ))
+            THRESHOLD=$(calc_threshold "$NUM_DEVICES")
+            GROW_RETRY_DELAY=0
+            ;;
+        2)
+            NEXT_GROW_ATTEMPT=$(( now + GROW_RETRY_MAX_DELAY ))
+            loginfo "growth limit reached; checking again in ${GROW_RETRY_MAX_DELAY}s"
+            ;;
+        *)
+            if [ "$GROW_RETRY_DELAY" -eq 0 ]; then
+                GROW_RETRY_DELAY=$GROW_RETRY_MIN_DELAY
+            else
+                GROW_RETRY_DELAY=$(( GROW_RETRY_DELAY * 2 ))
+                [ "$GROW_RETRY_DELAY" -le "$GROW_RETRY_MAX_DELAY" ] || GROW_RETRY_DELAY=$GROW_RETRY_MAX_DELAY
+            fi
+            NEXT_GROW_ATTEMPT=$(( now + GROW_RETRY_DELAY ))
+            logerr "growing failed; next attempt in ${GROW_RETRY_DELAY}s"
+            ;;
+    esac
+    return 0
+}
+
 run_daemon() {
     starting
     trap 'stopping; exit 0' INT TERM
@@ -204,25 +265,22 @@ run_daemon() {
     done
 
     local log_count="$LOG_INTERVAL"
-    local num_devices threshold stats pct
-    num_devices=$(get_num_devices)
-    threshold=$(calc_threshold "$num_devices")
+    local stats pct
+    NUM_DEVICES=$(get_num_devices)
+    THRESHOLD=$(calc_threshold "$NUM_DEVICES")
 
     while true; do
         stats=$(read_fs_stats "$MOUNTPOINT")
         pct=$(printf '%s' "$stats" | awk '{print $4}')
 
-        if [ "${pct:-0}" -ge "$threshold" ]; then
-            num_devices=$(get_num_devices)
-            loginfo "low disk (${pct}%): adding a volume"
-            add_space "$num_devices"
-            num_devices=$(( num_devices + 1 ))
-            threshold=$(calc_threshold "$num_devices")
-            log_count="$LOG_INTERVAL"
+        if [ "${pct:-0}" -ge "$THRESHOLD" ]; then
+            if attempt_grow "$pct"; then
+                log_count="$LOG_INTERVAL"
+            fi
         fi
 
         if [ "$log_count" -ge "$LOG_INTERVAL" ]; then
-            loginfo "devices=${num_devices} stats_bytes=[${stats}] util=${pct}% threshold=${threshold}%"
+            loginfo "devices=${NUM_DEVICES} stats_bytes=[${stats}] util=${pct}% threshold=${THRESHOLD}%"
             log_count=0
         fi
         log_count=$(( log_count + 1 ))
