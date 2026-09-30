@@ -264,6 +264,21 @@ final_count="$(owned_volume_count)"
 log "grew: /scratch size=${grew}B, owned volumes=${final_count}"
 [[ "$final_count" -ge 2 ]] || die "expected >=2 autoscale volumes after growth, got ${final_count}"
 
+# The daemon sets DeleteOnTermination after the grow; wait for it rather than
+# racing it into the leak check.
+log "waiting for DeleteOnTermination on every attached volume"
+dot_pending=""
+for ((i = 0; i < 24; i++)); do
+  # The backticks are JMESPath literals, not shell expansions.
+  # shellcheck disable=SC2016
+  dot_pending="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
+    --query 'length(Reservations[].Instances[].BlockDeviceMappings[?Ebs.DeleteOnTermination==`false`][])' \
+    --output text)"
+  [[ "$dot_pending" == "0" ]] && break
+  sleep 5
+done
+[[ "$dot_pending" == "0" ]] || die "DeleteOnTermination not enabled on ${dot_pending} attached volume(s)"
+
 log "terminating and checking for leaked volumes"
 aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null
 aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID"

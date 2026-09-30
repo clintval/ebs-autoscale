@@ -128,6 +128,23 @@ retry() {
     done
 }
 
+# enable_delete_on_termination BDM_DEVICE VOLUME_ID
+# Sets DeleteOnTermination by BDM name (not the NVMe path), retrying; on failure
+# the volume may outlive the instance, so log loudly and return non-zero.
+enable_delete_on_termination() {
+    local bdm_device="$1"
+    local volume_id="$2"
+    if ! retry 5 aws ec2 modify-instance-attribute \
+        --region "$AWS_REGION" \
+        --instance-id "$INSTANCE_ID" \
+        --block-device-mappings "DeviceName=${bdm_device},Ebs={DeleteOnTermination=true,VolumeId=${volume_id}}" >/dev/null; then
+        logerr "volume ${volume_id} DeleteOnTermination NOT enabled after retries; it may outlive the instance"
+        return 1
+    fi
+    loginfo "volume ${volume_id} DeleteOnTermination enabled"
+    return 0
+}
+
 starting() {
     loginfo "starting ebs-autoscale"
 }

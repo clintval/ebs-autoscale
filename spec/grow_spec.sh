@@ -43,7 +43,8 @@ Describe 'bin/ebs-autoscale growth attempts'
     VOLUMES_JSON=$(jq -nc --argjson n "$1" --argjson size "$2" --arg iid "$INSTANCE_ID" \
       '{Volumes: [range($n) | {Size: $size, Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}], Attachments: [{InstanceId: $iid}]}]}')
   }
-  create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
+  # create-ebs-volume --skip-delete-on-termination prints "<device> <bdm_device> <volume_id>".
+  create_succeeds() { echo "/dev/nvme1n1 /dev/sdf vol-0abc" > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
   # create_exits STATUS: create-ebs-volume prints CREATE_OUTPUT, then exits STATUS.
   # shellcheck disable=SC2016
@@ -51,7 +52,9 @@ Describe 'bin/ebs-autoscale growth attempts'
   create_at_limit() { create_fails; create_exits 3; }
   create_errors() { create_fails; create_exits 1; }
   create_count() { wc -l < "$CREATES" | tr -d ' '; }
-  aws_call_count() { wc -l < "$CALLS" | tr -d ' '; }
+  # A successful grow also sets DeleteOnTermination; count only the describe calls
+  # (grep -c still prints 0 when it exits 1 on no match).
+  aws_call_count() { grep -c describe-volumes "$CALLS" || true; }
 
   Describe 'once a growth limit is reached'
     # The first attempt discovers the limit; ticks over the next 5 minutes

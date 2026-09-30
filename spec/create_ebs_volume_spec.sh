@@ -66,7 +66,20 @@ Describe 'bin/create-ebs-volume volume creation'
       When run create_and_attach_volume
       The status should be success
       The output should equal /dev/nvme1n1
-      The contents of file "$CALLS" should include 'DeviceName=/dev/sdf'
+      The contents of file "$CALLS" should include 'DeviceName=/dev/sdf,Ebs={DeleteOnTermination=true,VolumeId=vol-0abc}'
+    End
+
+    It 'makes no modify-instance-attribute call when DeleteOnTermination is skipped'
+      SKIP_DELETE_ON_TERMINATION=1
+      When run create_and_attach_volume
+      The output should be present
+      The contents of file "$CALLS" should not include 'modify-instance-attribute'
+    End
+
+    It 'prints device, BDM name and volume id when DeleteOnTermination is skipped'
+      SKIP_DELETE_ON_TERMINATION=1
+      When run create_and_attach_volume
+      The output should equal '/dev/nvme1n1 /dev/sdf vol-0abc'
     End
 
     It 'exits 3 without creating a volume that would take the total created size past the max'

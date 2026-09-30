@@ -173,13 +173,14 @@ add_space() {
         loginfo "not growing: ${limits}"
         return 2
     fi
-    local vol_size device
+    local vol_size created device bdm_device volume_id
     local status=0
     vol_size=$(calc_new_size "$num_devices" "$autoscaled_gb")
     loginfo "extending ${MOUNTPOINT} by ${vol_size}GB"
-    device=$("$CREATE_VOLUME" --size "$vol_size" \
+    created=$("$CREATE_VOLUME" --size "$vol_size" \
         --max-total-created-size "$MAX_LOGICAL_VOLUME_SIZE" \
-        --max-attached-volumes "$MAX_EBS_VOLUME_COUNT") || status=$?
+        --max-attached-volumes "$MAX_EBS_VOLUME_COUNT" \
+        --skip-delete-on-termination) || status=$?
     case "$status" in
         0) ;;
         3) return 2 ;;
@@ -188,11 +189,20 @@ add_space() {
             return 1
             ;;
     esac
-    if [ -z "$device" ]; then
+    # Output is "<device> <bdm_device> <volume_id>".
+    read -r device bdm_device volume_id <<CREATED_EOF
+$created
+CREATED_EOF
+    if [ -z "$volume_id" ]; then
         logerr "failed to create or attach a volume"
         return 1
     fi
-    if grow_filesystem "$device"; then
+    # Extend first so the new space is usable immediately. DeleteOnTermination
+    # follows even when the grow fails, so the volume is deleted with the instance.
+    local grow_status=0
+    grow_filesystem "$device" || grow_status=$?
+    enable_delete_on_termination "$bdm_device" "$volume_id" || true
+    if [ "$grow_status" -eq 0 ]; then
         loginfo "finished extending ${MOUNTPOINT}"
         return 0
     fi

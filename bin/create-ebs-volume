@@ -65,6 +65,9 @@ Options
     --max-created-volumes N
                         Max number of volumes created by this instance.
                         (Default: --max-attached-volumes)
+    --skip-delete-on-termination
+                        Leave DeleteOnTermination to the caller and print
+                        "<device> <bdm_device> <volume_id>" instead of <device>.
 
 Exit status
 
@@ -326,17 +329,13 @@ create_and_attach_volume() {
     fi
     loginfo "volume ${volume_id} present as ${real_device} (bdm ${bdm_device})"
 
-    # DeleteOnTermination must reference the BDM name, not the NVMe path. Retry
-    # a few times; if it still fails the volume is usable but may outlive the
-    # instance, so log loudly rather than aborting an otherwise-good attach.
-    if retry 5 aws ec2 modify-instance-attribute \
-        --region "$region" \
-        --instance-id "$instance_id" \
-        --block-device-mappings "DeviceName=${bdm_device},Ebs={DeleteOnTermination=true,VolumeId=${volume_id}}" >/dev/null; then
-        loginfo "volume ${volume_id} DeleteOnTermination enabled"
-    else
-        logerr "volume ${volume_id} DeleteOnTermination NOT enabled after retries; it may outlive the instance"
+    if [ "${SKIP_DELETE_ON_TERMINATION:-0}" = "1" ]; then
+        printf '%s %s %s\n' "$real_device" "$bdm_device" "$volume_id"
+        return 0
     fi
+
+    # A failure is logged and must not abort an otherwise-good attach.
+    enable_delete_on_termination "$bdm_device" "$volume_id" || true
 
     printf '%s\n' "$real_device"
 }
@@ -354,6 +353,7 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
     MAX_ATTACHED_VOLUMES=$(get_config_value .limits.max_ebs_volume_count)
     MAX_CREATED_VOLUMES=""
     SIZE=""
+    SKIP_DELETE_ON_TERMINATION=0
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -365,6 +365,7 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
             --max-total-created-size)   MAX_LOGICAL_VOLUME_SIZE="$2"; shift 2 ;;
             --max-attached-volumes)     MAX_ATTACHED_VOLUMES="$2"; shift 2 ;;
             --max-created-volumes)      MAX_CREATED_VOLUMES="$2"; shift 2 ;;
+            --skip-delete-on-termination) SKIP_DELETE_ON_TERMINATION=1; shift ;;
             -h|--help)                  echo "$USAGE"; exit 0 ;;
             -*)                         error "unsupported argument $1" ;;
             *)                          error "unexpected argument $1" ;;
