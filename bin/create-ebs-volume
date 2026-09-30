@@ -67,6 +67,9 @@ Options
 USAGE_EOF
 )
 
+# Seconds to wait for a new volume to become available.
+VOLUME_AVAILABLE_TIMEOUT=300
+
 error() {
     logerr "$1"
     exit 1
@@ -171,6 +174,58 @@ instance_tag_specifications() {
         '[{ResourceType:"volume", Tags: ([{Key:"source-instance",Value:$iid},{Key:"amazon-ebs-autoscale-creation-time",Value:$ts}] + .)}]'
 }
 
+# jittered_ms MILLIS -> MILLIS scaled by a random factor in [0.75, 1.25].
+# Spreads out the polls of instances that start growing at the same moment.
+# Uses /dev/urandom because dash has no $RANDOM; with no randomness available
+# the factor falls back to 0.75.
+jittered_ms() {
+    local millis="$1"
+    local random
+    random=$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')
+    printf '%s' $(( millis * (750 + ${random:-0} % 501) / 1000 ))
+}
+
+# wait_for_volume_available VOLUME_ID
+# Polls this one volume until it is available, sleeping 1 s between polls at
+# first and backing off by 1.5x to a 5 s cap (each sleep jittered, and never
+# above the cap). This is far quicker than `aws ec2 wait volume-available`,
+# whose fixed 15 s poll interval dominated grow latency, and still cheap: a
+# typical volume is ready within two or three polls. Returns 1 immediately if
+# the volume is in state "error", "deleting" or "deleted", or once
+# VOLUME_AVAILABLE_TIMEOUT elapses. The timeout counts the planned sleeps, so
+# slow describe calls stretch it, and the fractional sleep relies on GNU sleep
+# (Amazon Linux 2023).
+wait_for_volume_available() {
+    local volume_id="$1"
+    local timeout_ms=$(( VOLUME_AVAILABLE_TIMEOUT * 1000 ))
+    local base_ms=1000
+    local max_ms=5000
+    local elapsed_ms=0
+    local sleep_ms state
+    while [ "$elapsed_ms" -lt "$timeout_ms" ]; do
+        state=$(aws ec2 describe-volumes \
+            --region "$AWS_REGION" \
+            --volume-ids "$volume_id" \
+            --query 'Volumes[0].State' \
+            --output text 2>/dev/null)
+        case "$state" in
+            available) return 0 ;;
+            error|deleting|deleted)
+                logerr "volume ${volume_id} entered state ${state}"
+                return 1
+                ;;
+        esac
+        sleep_ms=$(jittered_ms "$base_ms")
+        [ "$sleep_ms" -le "$max_ms" ] || sleep_ms=$max_ms
+        sleep "$(printf '%d.%03d' $(( sleep_ms / 1000 )) $(( sleep_ms % 1000 )))"
+        elapsed_ms=$(( elapsed_ms + sleep_ms ))
+        base_ms=$(( base_ms * 3 / 2 ))
+        [ "$base_ms" -le "$max_ms" ] || base_ms=$max_ms
+    done
+    logerr "timed out waiting for volume ${volume_id} to become available"
+    return 1
+}
+
 create_and_attach_volume() {
     local instance_id="$INSTANCE_ID"
     local availability_zone="$AWS_AZ"
@@ -246,7 +301,7 @@ create_and_attach_volume() {
 
     # If the volume never becomes available, delete it rather than leaking it
     # and then attaching something that is not ready.
-    if ! aws ec2 wait volume-available --region "$region" --volume-ids "$volume_id" >/dev/null 2>&1; then
+    if ! wait_for_volume_available "$volume_id"; then
         aws ec2 delete-volume --region "$region" --volume-id "$volume_id" >/dev/null 2>&1
         error "volume ${volume_id} did not become available; deleted it"
     fi
