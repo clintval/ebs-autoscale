@@ -29,14 +29,10 @@ Describe 'bin/ebs-autoscale growth attempts'
     now_seconds() { printf '%s' "$NOW"; }
     sleep() { :; }
     grow_filesystem() { return "$GROW_RC"; }
-    # Serves describe-volumes from VOLUMES_JSON whichever way it is asked,
-    # and records each call.
+    # Serves describe-volumes from VOLUMES_JSON and records each call.
     aws() {
       printf '%s\n' "$*" >> "$CALLS"
-      case "$*" in
-        *"--query"*) printf '%s' "$VOLUMES_JSON" | jq '[.Volumes[].Size] | add // 0' ;;
-        *)           printf '%s' "$VOLUMES_JSON" ;;
-      esac
+      printf '%s' "$VOLUMES_JSON"
     }
   }
   Before 'setup'
@@ -45,7 +41,7 @@ Describe 'bin/ebs-autoscale growth attempts'
   # attached to this instance.
   set_volumes() {
     VOLUMES_JSON=$(jq -nc --argjson n "$1" --argjson size "$2" --arg iid "$INSTANCE_ID" \
-      '{Volumes: [range($n) | {Size: $size, Attachments: [{InstanceId: $iid}]}]}')
+      '{Volumes: [range($n) | {Size: $size, Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}], Attachments: [{InstanceId: $iid}]}]}')
   }
   create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
@@ -106,6 +102,27 @@ Describe 'bin/ebs-autoscale growth attempts'
       When call attempt_grow 95
       The status should be success
       The value "$NUM_DEVICES $THRESHOLD" should equal '4 80'
+    End
+  End
+
+  Describe 'when EC2 cannot be queried'
+    It 'backs off without creating a volume'
+      aws() { printf '%s\n' "$*" >> "$CALLS"; return 1; }
+      attempt_grow 95 2>/dev/null
+      NOW=1009
+      When call attempt_grow 95
+      The status should equal 1
+      The value "$(create_count)" should equal 0
+      The value "$(aws_call_count)" should equal 1
+    End
+
+    It 'retries the query once the backoff has elapsed'
+      aws() { printf '%s\n' "$*" >> "$CALLS"; return 1; }
+      attempt_grow 95 2>/dev/null
+      NOW=1010
+      When call attempt_grow 95
+      The stderr should include 'could not query EC2'
+      The value "$(aws_call_count)" should equal 2
     End
   End
 

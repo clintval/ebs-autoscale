@@ -45,30 +45,27 @@ CREATE_VOLUME="${EBS_AUTOSCALE_HOME}/bin/create-ebs-volume"
 # autoscaled volume from one attached for other reasons.
 CREATION_TAG=amazon-ebs-autoscale-creation-time
 
-# Number of autoscaled volumes currently attached to this instance.
-get_num_devices() {
-    local response
+# get_autoscaled_usage -> "NUM_DEVICES AUTOSCALED_GB", answered by one
+# describe-volumes of the volumes this instance created. NUM_DEVICES counts
+# those still attached to this instance that carry the creation tag.
+# AUTOSCALED_GB sums the sizes of every volume this instance created, attached
+# or not, independent of any local instance-store already in the volume group.
+# Fails without output if EC2 cannot be queried: callers must not mistake that
+# for an empty instance and create a volume while EC2 is throttling or down.
+get_autoscaled_usage() {
+    local response usage
     response=$(aws ec2 describe-volumes \
         --region "$AWS_REGION" \
-        --filters "Name=attachment.instance-id,Values=${INSTANCE_ID}" "Name=tag-key,Values=${CREATION_TAG}" \
-        --output json 2>/dev/null)
-    [ -n "$response" ] || response='{"Volumes":[]}'
-    printf '%s' "$response" | jq '.Volumes | length'
-}
-
-# Total GB of EBS this instance has created (the autoscaled space), independent
-# of any local instance-store already in the volume group. "None"/empty become 0.
-get_autoscaled_size_gb() {
-    local size
-    size=$(aws ec2 describe-volumes \
-        --region "$AWS_REGION" \
         --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
-        --query 'sum(Volumes[].Size)' \
-        --output text 2>/dev/null)
-    case "$size" in
-        ''|None|null) echo 0 ;;
-        *) echo "$size" ;;
-    esac
+        --output json 2>/dev/null)
+    [ -n "$response" ] || return 1
+    usage=$(printf '%s' "$response" | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" \
+        '[([.Volumes[]
+            | select(any(.Attachments[]?; .InstanceId == $iid))
+            | select(any(.Tags[]?; .Key == $tag))] | length),
+          ([.Volumes[].Size] | add // 0)] | "\(.[0]) \(.[1])"' 2>/dev/null)
+    [ -n "$usage" ] || return 1
+    printf '%s' "$usage"
 }
 
 # calc_threshold NUM_DEVICES -> utilization percent that triggers a new volume.
@@ -168,12 +165,12 @@ grow_filesystem() {
     esac
 }
 
-# add_space NUM_DEVICES: create one volume and extend the filesystem onto it.
+# add_space NUM_DEVICES AUTOSCALED_GB: create one volume and extend the
+# filesystem onto it.
 # Returns 0 on success, 2 if a limit forbids growing, 1 if growing failed.
 add_space() {
     local num_devices="$1"
-    local autoscaled_gb
-    autoscaled_gb=$(get_autoscaled_size_gb)
+    local autoscaled_gb="$2"
     if ! can_grow "$num_devices" "$autoscaled_gb"; then
         loginfo "not growing: devices=${num_devices}/${MAX_EBS_VOLUME_COUNT} autoscaled=${autoscaled_gb}/${MAX_LOGICAL_VOLUME_SIZE}GB"
         return 2
@@ -226,10 +223,17 @@ attempt_grow() {
     now=$(now_seconds)
     [ "$now" -ge "$NEXT_GROW_ATTEMPT" ] || return 1
 
-    NUM_DEVICES=$(get_num_devices)
-    loginfo "low disk (${pct}%)"
+    local usage autoscaled_gb
     local status=0
-    add_space "$NUM_DEVICES" || status=$?
+    if usage=$(get_autoscaled_usage); then
+        NUM_DEVICES=${usage% *}
+        autoscaled_gb=${usage#* }
+        loginfo "low disk (${pct}%)"
+        add_space "$NUM_DEVICES" "$autoscaled_gb" || status=$?
+    else
+        logerr "could not query EC2 for this instance's volumes"
+        status=1
+    fi
     case "$status" in
         0)
             NUM_DEVICES=$(( NUM_DEVICES + 1 ))
@@ -265,8 +269,10 @@ run_daemon() {
     done
 
     local log_count="$LOG_INTERVAL"
-    local stats pct
-    NUM_DEVICES=$(get_num_devices)
+    local stats pct usage
+    # Only the initial threshold depends on this; it is refreshed before any grow.
+    usage=$(get_autoscaled_usage) || usage="0 0"
+    NUM_DEVICES=${usage% *}
     THRESHOLD=$(calc_threshold "$NUM_DEVICES")
 
     while true; do
