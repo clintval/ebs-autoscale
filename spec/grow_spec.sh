@@ -116,6 +116,25 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'when the startup query fails'
+    It 'does not grow on the fallback threshold once the device count is known'
+      MAX_EBS_VOLUME_COUNT=16
+      set_volumes 5 100
+      MOUNTPOINT="$SHELLSPEC_TMPBASE"; LOG_INTERVAL=1; DETECTION_INTERVAL=2
+      read_fs_stats() { echo '100 60 40 60'; }
+      sleep() { exit 0; }
+      aws() {
+        printf '%s\n' "$*" >> "$CALLS"
+        [ "$(aws_call_count)" -gt 1 ] || return 1
+        printf '%s' "$VOLUMES_JSON"
+      }
+      When run run_daemon
+      The status should be success
+      The value "$(create_count)" should equal 0
+      The value "$(aws_call_count)" should equal 2
+    End
+  End
+
   Describe 'when the log cannot be written'
     It 'still reports a successful grow'
       EBS_AUTOSCALE_LOG_FILE=/nonexistent/ebs-autoscale.log
