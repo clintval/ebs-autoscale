@@ -126,6 +126,17 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'when a failed attempt outlasts the backoff'
+    It 'times the backoff from when the attempt ended'
+      grow_filesystem() { NOW=$(( NOW + 60 )); return 1; }
+      attempt_grow 95 2>/dev/null
+      NOW=1069
+      When call attempt_grow 95
+      The status should equal 1
+      The value "$(create_count)" should equal 1
+    End
+  End
+
   Describe 'when creating the volume fails'
     It 'does not advance the device count'
       create_fails

@@ -234,6 +234,7 @@ attempt_grow() {
         logerr "could not query EC2 for this instance's volumes"
         status=1
     fi
+    now=$(now_seconds)
     case "$status" in
         0)
             NUM_DEVICES=$(( NUM_DEVICES + 1 ))
