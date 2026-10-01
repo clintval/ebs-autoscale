@@ -220,6 +220,20 @@ Describe 'bin/ebs-autoscale growth attempts'
       The output should equal "$(printf 'before: 10\nafter: 11')"
     End
 
+    It 'starts over at 10 seconds after a growth limit'
+      create_fails
+      attempt_grow 95 2>/dev/null
+      NOW=1010; attempt_grow 95 2>/dev/null
+      set_volumes 2 100
+      NOW=1030; attempt_grow 95
+      set_volumes 1 100
+      NOW=1330; attempt_grow 95 2>/dev/null
+      NOW=1340
+      When call attempt_grow 95
+      The stderr should include 'growing failed'
+      The value "$(create_count)" should equal 4
+    End
+
     It 'starts over at 10 seconds after a success'
       create_fails
       attempt_grow 95 2>/dev/null

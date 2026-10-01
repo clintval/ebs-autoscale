@@ -244,6 +244,7 @@ attempt_grow() {
             GROW_RETRY_DELAY=0
             ;;
         2)
+            GROW_RETRY_DELAY=0
             NEXT_GROW_ATTEMPT=$(( now + GROW_RETRY_MAX_DELAY ))
             loginfo "growth limit reached; checking again in ${GROW_RETRY_MAX_DELAY}s"
             ;;
