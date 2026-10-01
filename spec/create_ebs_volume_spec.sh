@@ -86,6 +86,15 @@ Describe 'bin/create-ebs-volume volume creation'
       The stderr should include 'did not become available'
     End
 
+    It 'deletes the volume when it is still not available at the timeout'
+      VOLUME_STATE=creating
+      EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
+      When run create_and_attach_volume
+      The status should be failure
+      The stderr should include 'timed out'
+      The contents of file "$CALLS" should include 'delete-volume'
+    End
+
     # A failed attach must also delete the just-created volume.
     It 'deletes the volume when the attach fails'
       ATTACH_RC=1
