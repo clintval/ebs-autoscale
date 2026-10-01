@@ -101,35 +101,6 @@ get_next_logical_device() {
     return 1
 }
 
-# _nvme_candidates: print attached NVMe namespace devices, one per line.
-# Factored out (and overridable) so the resolver can be unit-tested.
-_nvme_candidates() {
-    local dev
-    for dev in /dev/nvme*n1; do
-        [ -b "$dev" ] && printf '%s\n' "$dev"
-    done
-}
-
-# match_nvme_device DEV VOLUME_ID SERIAL -> 0 if DEV is the block device for the
-# volume. Matches the kernel-reported NVMe serial first (no external tool), then
-# falls back to ebsnvme-id in both its legacy (-v) and subcommand (id -v) forms.
-# The ebsnvme-id binary can be overridden with EBSNVME for testing.
-match_nvme_device() {
-    local dev="$1"
-    local target_vol="$2"
-    local target_serial="$3"
-    local serial vid ebsnvme
-    serial=$(lsblk -dno SERIAL "$dev" 2>/dev/null)
-    if [ "$serial" = "$target_serial" ] || [ "$serial" = "$target_vol" ]; then
-        return 0
-    fi
-    ebsnvme=${EBSNVME:-$(command -v ebsnvme-id 2>/dev/null || echo /usr/sbin/ebsnvme-id)}
-    vid=$("$ebsnvme" -v "$dev" 2>>"$EBS_AUTOSCALE_LOG_FILE" \
-        || "$ebsnvme" id -v "$dev" 2>>"$EBS_AUTOSCALE_LOG_FILE")
-    vid=$(printf '%s' "$vid" | awk '/Volume ID:/{print $3}')
-    [ "$vid" = "$target_vol" ]
-}
-
 # resolve_nvme_device VOLUME_ID
 # Prints the real /dev/nvme*n1 path for an attached EBS volume, bounded so a
 # volume that never appears is a logged error rather than an infinite hang.
