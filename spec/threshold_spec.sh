@@ -23,6 +23,67 @@ Describe 'bin/ebs-autoscale scaling ladders'
     End
   End
 
+  Describe 'space_is_low'
+    setup() { THRESHOLD=50; MIN_FREE_SPACE=0; }
+    Before 'setup'
+
+    Describe 'in percentage mode'
+      It 'is low at the threshold'
+        When call space_is_low 50 999999999999
+        The status should be success
+      End
+      It 'is not low under the threshold, however little space is left'
+        When call space_is_low 49 1
+        The status should be failure
+      End
+      It 'is not low when the utilization is empty'
+        When call space_is_low '' 1
+        The status should be failure
+      End
+      It 'follows the device-count threshold'
+        THRESHOLD=80
+        When call space_is_low 79 1
+        The status should be failure
+      End
+    End
+
+    Describe 'in free-space mode'
+      setup_floor() { MIN_FREE_SPACE=100; }
+      Before 'setup_floor'
+
+      It 'is low when free space is under the floor even at low utilization'
+        When call space_is_low 5 $(( 99 * BYTES_PER_GB ))
+        The status should be success
+      End
+      It 'is low for a floor too large to express in bytes'
+        MIN_FREE_SPACE=107374182400
+        When call space_is_low 5 $(( 99 * BYTES_PER_GB ))
+        The status should be success
+      End
+      It 'is not low when free space equals the floor'
+        When call space_is_low 99 $(( 100 * BYTES_PER_GB ))
+        The status should be failure
+      End
+      It 'is not low when free space is over the floor even at 95% utilization'
+        When call space_is_low 95 $(( 101 * BYTES_PER_GB ))
+        The status should be failure
+      End
+      It 'is low one byte under the floor'
+        When call space_is_low 5 $(( 100 * BYTES_PER_GB - 1 ))
+        The status should be success
+      End
+      It 'ignores the utilization threshold'
+        THRESHOLD=10
+        When call space_is_low 95 $(( 500 * BYTES_PER_GB ))
+        The status should be failure
+      End
+      It 'is not low when free space is unknown'
+        When call space_is_low 95 ''
+        The status should be failure
+      End
+    End
+  End
+
   Describe 'calc_new_size'
     setup() { MIN_EBS_VOLUME_SIZE=150; MAX_EBS_VOLUME_SIZE=1500; MAX_LOGICAL_VOLUME_SIZE=8000; }
     Before 'setup'
@@ -48,6 +109,38 @@ Describe 'bin/ebs-autoscale scaling ladders'
     It 'shrinks to what is left under the max total size'
       When call calc_new_size 11 7700
       The output should equal 300
+    End
+    It 'pads a shortfall larger than the step by 8%'
+      When call calc_new_size 1 0 700
+      The output should equal 756
+    End
+    It 'pads a 500 GB shortfall to 540 GB'
+      When call calc_new_size 1 0 500
+      The output should equal 540
+    End
+    It 'rounds the padded shortfall up to a whole GB'
+      When call calc_new_size 1 0 151
+      The output should equal 164
+    End
+    It 'uses a padded shortfall that overtakes the step'
+      When call calc_new_size 1 0 140
+      The output should equal 152
+    End
+    It 'keeps the step when the padded shortfall is smaller'
+      When call calc_new_size 5 0 200
+      The output should equal 300
+    End
+    It 'caps a padded shortfall at the max volume size'
+      When call calc_new_size 1 0 1450
+      The output should equal 1500
+    End
+    It 'caps a shortfall too large to pad at the max volume size'
+      When call calc_new_size 1 0 999999999999999999
+      The output should equal 1500
+    End
+    It 'caps a padded shortfall at what is left under the max total size'
+      When call calc_new_size 1 7480 500
+      The output should equal 520
     End
     It 'does not turn a non-numeric size into the whole remaining budget'
       MAX_EBS_VOLUME_SIZE=null

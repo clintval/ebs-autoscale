@@ -17,7 +17,8 @@
         "max_ebs_volume_size": "%%MAXEBSVOLUMESIZE%%",
         "max_logical_volume_size": "%%MAXLOGICALVOLUMESIZE%%",
         "max_ebs_volume_count": "%%MAXATTACHEDVOLUMES%%",
-        "initial_utilization_threshold": "%%INITIALUTILIZATIONTHRESHOLD%%"
+        "initial_utilization_threshold": "%%INITIALUTILIZATIONTHRESHOLD%%",
+        "min_free_space": "%%MINFREESPACE%%"
     },
     "logging": {
         "log_file": "/var/log/ebs-autoscale.log",

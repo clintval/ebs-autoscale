@@ -13,7 +13,7 @@ Describe 'bin/ebs-autoscale growth attempts'
     INSTANCE_ID='i-0123'
     AWS_REGION=us-west-2
     GROW_RETRY_DELAY=0; NEXT_GROW_ATTEMPT=0
-    NUM_DEVICES=0; THRESHOLD=50; NOW=1000
+    NUM_DEVICES=0; THRESHOLD=50; NOW=1000; MIN_FREE_SPACE=0
     CALLS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.aws-calls"
     CREATES="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.creates"
     CREATE_OUTPUT="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.create-output"
@@ -48,6 +48,13 @@ Describe 'bin/ebs-autoscale growth attempts'
       '{Volumes: [range($n) | {VolumeId: "vol-0\(.)", Size: $size, State: "in-use",
         Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}],
         Attachments: [{InstanceId: $iid, Device: "/dev/sd\([102 + .] | implode)", State: "attached"}]}]}')
+  }
+  # Points run_daemon at a scratch mount and a fresh log, and makes it stop after one tick.
+  loop_setup() {
+    MOUNTPOINT="$SHELLSPEC_TMPBASE"; LOG_INTERVAL=1; DETECTION_INTERVAL=2
+    EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.loop-log"
+    : > "$EBS_AUTOSCALE_LOG_FILE"
+    sleep() { exit 0; }
   }
   create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
@@ -289,6 +296,161 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  It 'logs the utilization and threshold when low on disk'
+    EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.log"
+    : > "$EBS_AUTOSCALE_LOG_FILE"
+    When call attempt_grow 95 $(( 50 * BYTES_PER_GB ))
+    The status should be success
+    The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'low disk (util=95% threshold=50%)'
+    The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'min_free='
+  End
+
+  Describe 'in free-space mode'
+    free_space_mode() { MIN_FREE_SPACE=100; MAX_EBS_VOLUME_COUNT=16; }
+    Before 'free_space_mode'
+
+    It 'grows when free space is under the floor at low utilization'
+      When call attempt_grow 10 $(( 50 * BYTES_PER_GB ))
+      The status should be success
+      The value "$(create_count)" should equal 1
+    End
+
+    It 'does not grow when free space is over the floor at 95% utilization'
+      When call attempt_grow 95 $(( 150 * BYTES_PER_GB ))
+      The status should be success
+      The value "$(create_count)" should equal 0
+    End
+
+    It 'does not grow when free space is exactly the floor'
+      When call attempt_grow 95 $(( 100 * BYTES_PER_GB ))
+      The status should be success
+      The value "$(create_count)" should equal 0
+    End
+
+    It 'grows when free space is one byte under the floor'
+      When call attempt_grow 10 $(( 100 * BYTES_PER_GB - 1 ))
+      The status should be success
+      The value "$(create_count)" should equal 1
+    End
+
+    It 'does not apply the raised threshold of a high device count'
+      set_volumes 5 100
+      When call attempt_grow 60 $(( 50 * BYTES_PER_GB ))
+      The status should be success
+      The value "$(create_count)" should equal 1
+    End
+
+    It 'logs the free space rather than the utilization'
+      EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.log"
+      : > "$EBS_AUTOSCALE_LOG_FILE"
+      When call attempt_grow 10 $(( 50 * BYTES_PER_GB ))
+      The status should be success
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'low disk (free=50GB min_free=100GB)'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'util='
+    End
+
+    Describe 'sizing the next volume'
+      record_create_args() {
+        MAX_LOGICAL_VOLUME_SIZE=8000
+        # shellcheck disable=SC2016
+        printf '#!/bin/sh\necho "$*" >> "$CREATES"\ncat "$CREATE_OUTPUT"\n' > "$CREATE_VOLUME"
+      }
+      Before 'record_create_args'
+      requested_sizes() { sed -n 's/.*--size \([0-9]*\).*/\1/p' "$CREATES"; }
+
+      It 'covers the shortfall padded by 8% in one grow rather than the ladder size'
+        MIN_FREE_SPACE=1000; set_volumes 1 300
+        When call attempt_grow 1 $(( 300 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 756
+      End
+
+      It 'uses the ladder size when the shortfall is smaller'
+        MIN_FREE_SPACE=1000
+        When call attempt_grow 10 $(( 950 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 150
+      End
+
+      It 'caps the shortfall at the max volume size'
+        MIN_FREE_SPACE=5000
+        When call attempt_grow 1 $(( 300 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 1500
+      End
+
+      It 'caps the shortfall at the room left under the max total size'
+        MIN_FREE_SPACE=1000; set_volumes 1 7500
+        When call attempt_grow 1 $(( 300 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 500
+      End
+
+      It 'keeps the ladder size in percentage mode'
+        MIN_FREE_SPACE=0
+        When call attempt_grow 95 $(( 1 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 150
+      End
+    End
+
+    It 'backs off after a failed grow like the percentage mode'
+      create_errors
+      attempt_grow 10 $(( 50 * BYTES_PER_GB )) 2>/dev/null
+      NOW=1009
+      When call attempt_grow 10 $(( 50 * BYTES_PER_GB ))
+      The status should equal 1
+      The value "$(create_count)" should equal 1
+    End
+
+    Describe 'the main loop'
+      Before 'loop_setup'
+
+      It 'grows when free space is under the floor at low utilization'
+        read_fs_stats() { echo "$(( 1000 * BYTES_PER_GB )) $(( 950 * BYTES_PER_GB )) $(( 50 * BYTES_PER_GB )) 10"; }
+        When run run_daemon
+        The status should be success
+        The value "$(create_count)" should equal 1
+      End
+
+      It 'does not grow when free space is over the floor at 95% utilization'
+        read_fs_stats() { echo "$(( 1000 * BYTES_PER_GB )) $(( 850 * BYTES_PER_GB )) $(( 150 * BYTES_PER_GB )) 95"; }
+        When run run_daemon
+        The status should be success
+        The value "$(create_count)" should equal 0
+      End
+
+      It 'reconciles at startup over the floor without growing'
+        read_fs_stats() { echo "$(( 1000 * BYTES_PER_GB )) $(( 850 * BYTES_PER_GB )) $(( 150 * BYTES_PER_GB )) 95"; }
+        When run run_daemon
+        The status should be success
+        The value "$(aws_call_count)" should equal 2
+        The value "$(create_count)" should equal 0
+      End
+    End
+  End
+
+  Describe 'the periodic log line'
+    Before 'loop_setup'
+
+    It 'shows the free-space trigger in free-space mode'
+      MIN_FREE_SPACE=100
+      read_fs_stats() { echo "$(( 1000 * BYTES_PER_GB )) $(( 850 * BYTES_PER_GB )) $(( 150 * BYTES_PER_GB )) 95"; }
+      When run run_daemon
+      The status should be success
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'free=150GB min_free=100GB'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'threshold='
+    End
+
+    It 'shows the utilization threshold in percentage mode'
+      read_fs_stats() { echo '100 10 90 10'; }
+      When run run_daemon
+      The status should be success
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'util=10% threshold=50%'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'min_free='
+    End
+  End
+
   Describe 'when the startup query fails'
     It 'does not grow on the fallback threshold once the device count is known'
       MAX_EBS_VOLUME_COUNT=16
@@ -431,6 +593,14 @@ Describe 'bin/ebs-autoscale growth attempts'
       The contents of file "$GROWS" should equal /dev/nvme2n1
     End
 
+    It 'folds it under the free-space floor without also creating a volume'
+      MIN_FREE_SPACE=100
+      When call attempt_grow 10 $(( 50 * BYTES_PER_GB ))
+      The status should be success
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+      The value "$(create_count)" should equal 0
+    End
+
     It 'folds a physical volume that is in no volume group'
       PVS=$(printf '  /dev/sdf   autoscale_vg\n  /dev/sdg               ')
       DISKS='nvme2n1 LVM2_member '
@@ -540,6 +710,17 @@ Describe 'bin/ebs-autoscale growth attempts'
         When run run_daemon_at_10_percent
         The status should be success
         The contents of file "$GROWS" should equal /dev/nvme2n1
+      End
+
+      It 'folds it without creating a volume when free space is over the floor'
+        MIN_FREE_SPACE=100
+        MOUNTPOINT="$SHELLSPEC_TMPBASE"; LOG_INTERVAL=1; DETECTION_INTERVAL=2
+        read_fs_stats() { echo "$(( 1000 * BYTES_PER_GB )) $(( 850 * BYTES_PER_GB )) $(( 150 * BYTES_PER_GB )) 85"; }
+        sleep() { exit 0; }
+        When run run_daemon
+        The status should be success
+        The contents of file "$GROWS" should equal /dev/nvme2n1
+        The value "$(create_count)" should equal 0
       End
 
       It 'retries a failed fold after the backoff even when usage is under the threshold'
