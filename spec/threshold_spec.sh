@@ -24,7 +24,6 @@ Describe 'bin/ebs-autoscale scaling ladders'
   End
 
   Describe 'space_is_low'
-    GB=1073741824
     setup() { THRESHOLD=50; MIN_FREE_SPACE=0; }
     Before 'setup'
 
@@ -53,29 +52,29 @@ Describe 'bin/ebs-autoscale scaling ladders'
       Before 'setup_floor'
 
       It 'is low when free space is under the floor even at low utilization'
-        When call space_is_low 5 $(( 99 * GB ))
+        When call space_is_low 5 $(( 99 * BYTES_PER_GB ))
         The status should be success
       End
       It 'is low for a floor too large to express in bytes'
         MIN_FREE_SPACE=107374182400
-        When call space_is_low 5 $(( 99 * GB ))
+        When call space_is_low 5 $(( 99 * BYTES_PER_GB ))
         The status should be success
       End
       It 'is not low when free space equals the floor'
-        When call space_is_low 99 $(( 100 * GB ))
+        When call space_is_low 99 $(( 100 * BYTES_PER_GB ))
         The status should be failure
       End
       It 'is not low when free space is over the floor even at 95% utilization'
-        When call space_is_low 95 $(( 101 * GB ))
+        When call space_is_low 95 $(( 101 * BYTES_PER_GB ))
         The status should be failure
       End
       It 'is low one byte under the floor'
-        When call space_is_low 5 $(( 100 * GB - 1 ))
+        When call space_is_low 5 $(( 100 * BYTES_PER_GB - 1 ))
         The status should be success
       End
       It 'ignores the utilization threshold'
         THRESHOLD=10
-        When call space_is_low 95 $(( 500 * GB ))
+        When call space_is_low 95 $(( 500 * BYTES_PER_GB ))
         The status should be failure
       End
       It 'is not low when free space is unknown'

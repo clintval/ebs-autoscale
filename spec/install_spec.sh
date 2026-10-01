@@ -80,12 +80,14 @@ Describe 'install.sh argument handling and config rendering'
       When call run_install --min-free-space 500 --initial-utilization-threshold 50
       The status should be failure
       The stderr should include 'error:'
+      The file "$CFG" should not be exist
     End
 
     It 'rejects 0'
       When call run_install --min-free-space 0
       The status should be failure
       The stderr should include 'error:'
+      The file "$CFG" should not be exist
     End
 
     It 'rejects a non-numeric value'
@@ -99,18 +101,21 @@ Describe 'install.sh argument handling and config rendering'
       When call run_install --min-free-space -5
       The status should be failure
       The stderr should include 'error:'
+      The file "$CFG" should not be exist
     End
 
     It 'rejects a decimal value'
       When call run_install --min-free-space 1.5
       The status should be failure
       The stderr should include 'error:'
+      The file "$CFG" should not be exist
     End
 
     It 'rejects an empty value'
       When call run_install --min-free-space ''
       The status should be failure
       The stderr should include 'error:'
+      The file "$CFG" should not be exist
     End
 
     It 'rejects a floor over the max total created size'
