@@ -45,8 +45,10 @@ Describe 'bin/ebs-autoscale growth attempts'
   }
   create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
+  # create_exits STATUS: create-ebs-volume prints CREATE_OUTPUT, then exits STATUS.
   # shellcheck disable=SC2016
-  create_at_limit() { printf '#!/bin/sh\necho create >> "$CREATES"\nexit 3\n' > "$CREATE_VOLUME"; }
+  create_exits() { printf '#!/bin/sh\necho create >> "$CREATES"\ncat "$CREATE_OUTPUT"\nexit %s\n' "$1" > "$CREATE_VOLUME"; }
+  create_at_limit() { create_fails; create_exits 3; }
   create_count() { wc -l < "$CREATES" | tr -d ' '; }
   aws_call_count() { wc -l < "$CALLS" | tr -d ' '; }
 
@@ -205,6 +207,13 @@ Describe 'bin/ebs-autoscale growth attempts'
   End
 
   Describe 'when creating the volume fails'
+    It 'fails when create-ebs-volume exits 1 even if it printed a device'
+      create_exits 1
+      When call add_space 1 100
+      The status should equal 1
+      The stderr should include 'status 1'
+    End
+
     It 'does not advance the device count'
       create_fails
       When call attempt_grow 95
