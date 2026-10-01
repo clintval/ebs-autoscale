@@ -42,7 +42,7 @@ EBS_AUTOSCALE_RENDER_ONLY=1 EBS_AUTOSCALE_CONFIG_FILE=/dev/stdout \
 
 ## End-to-End Testing
 
-`scripts/e2e.sh` runs the full install on a real Amazon Linux 2023 instance, fills the scratch mount to force a scale-up, and asserts it grew and left no volumes behind, tearing every resource down afterward.
+`scripts/e2e.sh` runs the full install on a real Amazon Linux 2023 instance, fills the scratch mount to force a scale-up, checks that a restarted daemon folds in a volume left outside the volume group, and asserts it left no volumes behind, tearing every resource down afterward.
 It uses your default AWS credentials and costs a few cents per run, so it is gated behind an environment variable:
 
 ```bash

@@ -4,10 +4,12 @@
 # Launches one EC2 instance, installs ebs-autoscale from the committed HEAD of
 # this repository (shipped to the instance through a throwaway S3 object), fills
 # /scratch past its utilization threshold, and asserts that the filesystem grew
-# and a second EBS volume was attached. It then terminates the instance and
-# asserts that no autoscale volume was left behind, which is the real test of
-# the DeleteOnTermination handling. Every resource is ephemeral and torn down
-# on exit.
+# and a second EBS volume was attached. It then stops the daemon, attaches a
+# tagged volume outside the volume group, restarts the daemon, and asserts the
+# volume is folded in without another being created. Finally it terminates the
+# instance and asserts that no autoscale volume was left behind, which is the
+# real test of the DeleteOnTermination handling. Every resource is ephemeral
+# and torn down on exit.
 #
 # This creates real AWS resources (one instance, a couple of small EBS volumes,
 # an IAM role, a security group, and an S3 object) and costs a few cents per run.
@@ -264,6 +266,37 @@ final_count="$(owned_volume_count)"
 log "grew: /scratch size=${grew}B, owned volumes=${final_count}"
 [[ "$final_count" -ge 2 ]] || die "expected >=2 autoscale volumes after growth, got ${final_count}"
 
+VG="$(ssm_run 'jq -r .lvm.volume_group /etc/ebs-autoscale.json')"
+[[ -n "$VG" ]] || die "could not read the volume group from /etc/ebs-autoscale.json"
+# Prints "vg=[NAME]" for the device's volume group, empty when it is not a PV.
+pv_vg() {
+  ssm_run "echo \"vg=[\$(pvs --noheadings -o vg_name $1 2>/dev/null | tr -d ' ')]\""
+}
+
+log "stopping the daemon and attaching a volume outside the volume group"
+ssm_run 'systemctl stop ebs-autoscale' >/dev/null
+stray_dev="$(ssm_run "/usr/local/ebs-autoscale/bin/create-ebs-volume --size ${INITIAL_GB}" | awk 'NF { last = $0 } END { print last }')"
+[[ "$stray_dev" == /dev/nvme* ]] || die "could not attach a stray volume (got '${stray_dev}')"
+[[ "$(pv_vg "$stray_dev")" == "vg=[]" ]] || die "${stray_dev} joined a volume group before the daemon restarted"
+stray_count="$(owned_volume_count)"
+stray_size="$(ssm_run 'df -B1 --output=size /scratch | tail -n1 | tr -d " "')"
+log "stray ${stray_dev} attached: owned volumes=${stray_count}, /scratch size=${stray_size}B"
+
+log "restarting the daemon and waiting for it to fold ${stray_dev} into ${VG}"
+ssm_run 'systemctl start ebs-autoscale' >/dev/null
+folded=""
+for ((i = 0; i < 24; i++)); do
+  cur="$(ssm_run 'df -B1 --output=size /scratch | tail -n1 | tr -d " "')"
+  if [[ "$(pv_vg "$stray_dev")" == "vg=[${VG}]" && "$cur" -gt "$stray_size" ]]; then folded="$cur"; break; fi
+  sleep 5
+done
+[[ -n "$folded" ]] || die "the daemon did not fold ${stray_dev} into ${VG} and grow /scratch"
+fold_logs="$(ssm_run "grep -c 'folding stray volume' /var/log/ebs-autoscale.log || true")"
+[[ "$fold_logs" -ge 1 ]] || die "the daemon did not log the fold"
+log "folded: /scratch size=${folded}B; waiting to confirm no extra volume is created"
+sleep 20
+[[ "$(owned_volume_count)" -eq "$stray_count" ]] || die "expected ${stray_count} owned volumes after the fold, got $(owned_volume_count)"
+
 log "terminating and checking for leaked volumes"
 aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null
 aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID"
@@ -273,4 +306,4 @@ leaked="$(aws ec2 describe-volumes --region "$REGION" \
 TERMINATED=1  # already terminated; keep cleanup from re-terminating
 [[ "$leaked" == "0" ]] || die "$leaked autoscale volume(s) leaked after termination"
 
-log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), no leaks"
+log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), folded a stray volume on restart, no leaks"
