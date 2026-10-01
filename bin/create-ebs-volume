@@ -233,11 +233,12 @@ create_and_attach_volume() {
     # volumes it created, so the source-instance set is a superset of what is
     # attached. The AWS CLI's adaptive retry (set in initialize) handles throttling.
     local owned
-    owned=$(aws ec2 describe-volumes \
+    if ! owned=$(aws ec2 describe-volumes \
         --region "$region" \
         --filters "Name=tag:source-instance,Values=${instance_id}" \
-        --output json 2>/dev/null)
-    [ -n "$owned" ] || owned='{"Volumes":[]}'
+        --output json 2>/dev/null) || [ -z "$owned" ]; then
+        error "could not query EC2 for this instance's volumes"
+    fi
 
     local created_count total_created_size attached_count claimed_devices
     created_count=$(printf '%s' "$owned" | jq '.Volumes | length')

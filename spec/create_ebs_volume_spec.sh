@@ -141,6 +141,29 @@ Describe 'bin/create-ebs-volume volume creation'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
+    Describe 'when describe-volumes'
+      Parameters
+        fails 254
+        'returns nothing' 0
+      End
+
+      It "$1 exits 1 without creating a volume"
+        DESCRIBE_RC=$2
+        aws() {
+          printf '%s\n' "$*" >> "$CALLS"
+          case "$*" in
+            *describe-volumes*--filters*) return "$DESCRIBE_RC" ;;
+            *describe-volumes*)           echo available ;;
+            *create-volume*)              echo '{"VolumeId":"vol-0abc"}' ;;
+          esac
+        }
+        When run create_and_attach_volume
+        The status should equal 1
+        The stderr should include 'could not query EC2'
+        The contents of file "$CALLS" should not include 'create-volume'
+      End
+    End
+
     # A failed attach must also delete the just-created volume.
     It 'deletes the volume when the attach fails'
       ATTACH_RC=1
