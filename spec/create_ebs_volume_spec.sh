@@ -230,14 +230,14 @@ Describe 'bin/create-ebs-volume volume creation'
     It 'lengthens the delay between polls as it waits'
       READY_ON_POLL=6
       When call wait_for_volume_available vol-0abc
-      # The 5th delay has a 5 s base: 3.75 s at the lowest jitter, capped at 5 s.
-      The value "$(sed -n 5p "$SLEEPS" | awk '{print ($1 >= 3.75 && $1 <= 5) ? "backed off" : "off"}')" should equal "backed off"
+      # The 5th delay has a 5 s base, so jitter keeps it within [3.75, 6.25] s.
+      The value "$(sed -n 5p "$SLEEPS" | awk '{print ($1 >= 3.75 && $1 <= 6.25) ? "backed off" : "off"}')" should equal "backed off"
     End
 
-    It 'never sleeps longer than the 5 second cap'
+    It 'spreads sleeps around the 5 second cap rather than pinning them to it'
       READY_ON_POLL=40
       When call wait_for_volume_available vol-0abc
-      The value "$(awk '$1 > 5 { n++ } END { print n + 0 }' "$SLEEPS")" should equal 0
+      The value "$(awk '$1 > 6.25 { over++ } $1 == 5 { pinned++ } END { print (over + 0 == 0 && pinned + 0 < 5) ? "spread" : "over=" over + 0 " pinned=" pinned + 0 }' "$SLEEPS")" should equal spread
     End
   End
 End

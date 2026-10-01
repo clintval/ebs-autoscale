@@ -184,8 +184,8 @@ jittered_ms() {
 
 # wait_for_volume_available VOLUME_ID
 # Polls this one volume until it is available, sleeping 1 s between polls at
-# first and backing off by 1.5x to a 5 s cap (each sleep jittered, and never
-# above the cap). This is far quicker than `aws ec2 wait volume-available`,
+# first and backing off by 1.5x to a 5 s cap (each sleep jittered around
+# the capped delay). This is far quicker than `aws ec2 wait volume-available`,
 # whose fixed 15 s poll interval dominated grow latency, and still cheap: a
 # typical volume is ready within two or three polls. Returns 1 immediately if
 # the volume is in state "error", "deleting" or "deleted", or once
@@ -214,7 +214,6 @@ wait_for_volume_available() {
         esac
         [ "$elapsed_ms" -lt "$timeout_ms" ] || break
         sleep_ms=$(jittered_ms "$base_ms")
-        [ "$sleep_ms" -le "$max_ms" ] || sleep_ms=$max_ms
         sleep "$(printf '%d.%03d' $(( sleep_ms / 1000 )) $(( sleep_ms % 1000 )))"
         elapsed_ms=$(( elapsed_ms + sleep_ms ))
         base_ms=$(( base_ms * 3 / 2 ))
