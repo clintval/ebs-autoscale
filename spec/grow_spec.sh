@@ -105,6 +105,17 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'when the refreshed device count raises the threshold'
+    It 'does not grow while utilization is under the new threshold'
+      MAX_EBS_VOLUME_COUNT=16
+      set_volumes 5 100
+      When call attempt_grow 60
+      The status should be success
+      The value "$(create_count)" should equal 0
+      The value "$NUM_DEVICES $THRESHOLD" should equal '5 80'
+    End
+  End
+
   Describe 'when EC2 cannot be queried'
     It 'backs off without creating a volume'
       aws() { printf '%s\n' "$*" >> "$CALLS"; return 1; }

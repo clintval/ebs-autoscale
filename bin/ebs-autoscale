@@ -228,6 +228,8 @@ attempt_grow() {
     if usage=$(get_autoscaled_usage); then
         NUM_DEVICES=${usage% *}
         autoscaled_gb=${usage#* }
+        THRESHOLD=$(calc_threshold "$NUM_DEVICES")
+        [ "$pct" -ge "$THRESHOLD" ] || return 0
         loginfo "low disk (${pct}%)"
         add_space "$NUM_DEVICES" "$autoscaled_gb" || status=$?
     else
