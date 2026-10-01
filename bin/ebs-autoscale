@@ -45,13 +45,8 @@ CREATE_VOLUME="${EBS_AUTOSCALE_HOME}/bin/create-ebs-volume"
 # autoscaled volume from one attached for other reasons.
 CREATION_TAG=amazon-ebs-autoscale-creation-time
 
-# get_autoscaled_usage -> "NUM_DEVICES AUTOSCALED_GB", answered by one
-# describe-volumes of the volumes this instance created. NUM_DEVICES counts
-# those still attached to this instance that carry the creation tag.
-# AUTOSCALED_GB sums the sizes of every volume this instance created, attached
-# or not, independent of any local instance-store already in the volume group.
-# Fails without output if EC2 cannot be queried: callers must not mistake that
-# for an empty instance and create a volume while EC2 is throttling or down.
+# get_autoscaled_usage -> "NUM_DEVICES AUTOSCALED_GB": attached autoscaled volumes and the
+# GB of every volume this instance created. Fails without output if EC2 cannot be queried.
 get_autoscaled_usage() {
     local response usage
     response=$(aws ec2 describe-volumes \
@@ -165,9 +160,7 @@ grow_filesystem() {
     esac
 }
 
-# add_space NUM_DEVICES AUTOSCALED_GB: create one volume and extend the
-# filesystem onto it.
-# Returns 0 on success, 2 if a limit forbids growing, 1 if growing failed.
+# add_space NUM_DEVICES AUTOSCALED_GB -> 0 grown, 2 at a growth limit, 1 failed.
 add_space() {
     local num_devices="$1"
     local autoscaled_gb="$2"
@@ -191,32 +184,25 @@ add_space() {
     return 1
 }
 
-# Daemon state: the attached autoscaled volume count and the utilization
-# percent that triggers the next grow.
+# The attached volume count and the utilization percent that triggers a grow.
 NUM_DEVICES=0
 THRESHOLD=0
 
-# After a failed grow the next attempt waits GROW_RETRY_DELAY seconds, doubling
-# from GROW_RETRY_MIN_DELAY to GROW_RETRY_MAX_DELAY, so a persistent failure
-# (permissions, capacity, a quota) does not hit the EC2 API on every tick. A
-# limit that forbids growing waits GROW_RETRY_MAX_DELAY, as the limit may lift
-# (a volume from a failed grow is still counted until EC2 finishes deleting it).
+# Failed grows back off from 10 s, doubling to 5 min; a growth limit waits 5 min.
 GROW_RETRY_MIN_DELAY=10
 GROW_RETRY_MAX_DELAY=300
 GROW_RETRY_DELAY=0
 NEXT_GROW_ATTEMPT=0
 
-# Seconds on a monotonic clock, unaffected by chrony stepping the wall clock at
-# boot. Overridable so the backoff can be tested without waiting.
+# Whole seconds of uptime, a monotonic clock that chrony cannot step.
 now_seconds() {
     local uptime
     read -r uptime _ < /proc/uptime
     printf '%s' "${uptime%.*}"
 }
 
-# attempt_grow PCT: called when utilization (PCT) is over the threshold.
-# Updates the globals NUM_DEVICES and THRESHOLD after a successful grow.
-# Returns 0 if EC2 was consulted and 1 if skipped (backing off).
+# attempt_grow PCT: refreshes NUM_DEVICES and THRESHOLD, then grows if PCT is still over it.
+# Returns 1 if skipped while backing off, else 0.
 attempt_grow() {
     local pct="$1"
     local now
