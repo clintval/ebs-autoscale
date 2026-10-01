@@ -68,6 +68,26 @@ Describe 'shared/utils.sh read_owned_volumes'
     The output should equal '0|0|0||'
   End
 
+  Describe 'fails closed on a response missing fields'
+    Parameters
+      'when Volumes is missing' 'del(.Volumes)'
+      'when Volumes is not a list' '.Volumes = {}'
+      'when a volume lacks its ID' 'del(.Volumes[0].VolumeId)'
+      'when a volume lacks its size' 'del(.Volumes[0].Size)'
+      'when a volume lacks its state' 'del(.Volumes[0].State)'
+      'when a volume lacks its attachments' 'del(.Volumes[0].Attachments)'
+      'when an attachment lacks its instance' 'del(.Volumes[0].Attachments[0].InstanceId)'
+      'when an attachment lacks its state' 'del(.Volumes[0].Attachments[0].State)'
+      'when an attachment lacks its device' 'del(.Volumes[0].Attachments[0].Device)'
+    End
+
+    It "$1"
+      RESPONSE=$(printf '%s' "$RESPONSE" | jq -c "$2")
+      When call read_owned_volumes
+      The status should be failure
+    End
+  End
+
   Describe 'fails closed'
     Parameters
       'when describe-volumes fails' fail ''

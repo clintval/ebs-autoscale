@@ -93,6 +93,13 @@ Describe 'bin/ebs-autoscale get_autoscaled_usage'
     The output should equal ''
   End
 
+  It 'fails without output when a volume lacks its size'
+    RESPONSE=$(volumes "$(volume 100 i-0123 | jq -c 'del(.Size)')")
+    When call get_autoscaled_usage
+    The status should be failure
+    The output should equal ''
+  End
+
   It 'fails without output when the aws call fails'
     aws() { return 1; }
     When call get_autoscaled_usage

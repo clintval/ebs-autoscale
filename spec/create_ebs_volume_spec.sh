@@ -184,6 +184,14 @@ Describe 'bin/create-ebs-volume volume creation'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
+    It 'exits 1 without creating a volume when a listed volume lacks its size'
+      OWNED_VOLUMES='{"Volumes":[{"VolumeId":"vol-0a","State":"available","Attachments":[]}]}'
+      When run create_and_attach_volume
+      The status should equal 1
+      The stderr should include 'could not query EC2'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
     It 'does not count a volume deleted after a failed attach toward the total created size'
       OWNED_VOLUMES='{"Volumes":[{"VolumeId":"vol-0a","Size":6500,"State":"available","Attachments":[]},
         {"VolumeId":"vol-0b","Size":1500,"State":"deleting","Attachments":[]}]}'

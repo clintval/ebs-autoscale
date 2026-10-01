@@ -235,7 +235,7 @@ Describe 'bin/ebs-autoscale growth attempts'
           '  *instance-id*) echo i-0123 ;;' \
           'esac' > "$bin/curl"
         printf '%s\n' '#!/bin/sh' 'case "$*" in' \
-          "  *describe-volumes*) jq -nc '{Volumes: [{Size: 7900}]}' ;;" \
+          "  *describe-volumes*) jq -nc '{Volumes: [{VolumeId: \"vol-0a\", Size: 7900, State: \"available\", Attachments: []}]}' ;;" \
           '  *) exit 1 ;;' \
           'esac' > "$bin/aws"
         chmod +x "$bin/curl" "$bin/aws"
