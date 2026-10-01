@@ -3,6 +3,7 @@ SHELL := /bin/bash
 SCRIPTS := sbin/install.sh sbin/uninstall.sh bin/create-ebs-volume bin/ebs-autoscale \
            shared/utils.sh scripts/e2e.sh
 SPECS := spec/*.sh
+SPEC_SHELL ?=
 
 .PHONY: all
 all: lint-sh test-sh
@@ -13,7 +14,7 @@ lint-sh:
 
 .PHONY: test-sh
 test-sh:
-	shellspec
+	shellspec $(if $(SPEC_SHELL),--shell '$(SPEC_SHELL)')
 
 .PHONY: e2e
 e2e:

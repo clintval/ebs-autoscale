@@ -12,6 +12,14 @@ make test-sh
 
 The specs stub `aws`, `lsblk`, and `df` on `PATH`, so they need no AWS account and make no network calls.
 
+CI also runs the suite under dash and under bash in POSIX mode, the `/bin/sh` of Debian/Ubuntu and of Amazon Linux 2023.
+Pick the shell with `SPEC_SHELL`:
+
+```bash
+make test-sh SPEC_SHELL=dash
+make test-sh SPEC_SHELL='bash --posix'
+```
+
 ## Local Linting
 
 Lint every script and spec with [ShellCheck](https://www.shellcheck.net/):
