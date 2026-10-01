@@ -36,6 +36,7 @@ Describe 'bin/create-ebs-volume volume creation'
       # Deterministic stubs for the device layer.
       get_next_logical_device() { printf '/dev/sdf'; }
       resolve_nvme_device() { printf '/dev/nvme1n1'; }
+      sleep() { :; }
       # Record every aws invocation and return canned responses.
       aws() {
         printf '%s\n' "$*" >> "$CALLS"
@@ -45,13 +46,15 @@ Describe 'bin/create-ebs-volume volume creation'
           *create-volume*)               echo '{"VolumeId":"vol-0abc"}' ;;
           *"wait volume-available"*)     return "${WAIT_RC:-0}" ;;
           *attach-volume*)               return "${ATTACH_RC:-0}" ;;
-          *modify-instance-attribute*)   return 0 ;;
+          *modify-instance-attribute*)   return "${MODIFY_RC:-0}" ;;
           *delete-volume*)               return 0 ;;
           *)                             return 0 ;;
         esac
       }
     }
     Before 'setup'
+
+    modify_calls() { grep -c modify-instance-attribute "$CALLS"; }
 
     # Happy path returns the real NVMe device, and DeleteOnTermination must
     # reference the BDM name, not the NVMe path.
@@ -60,6 +63,17 @@ Describe 'bin/create-ebs-volume volume creation'
       The status should be success
       The output should equal /dev/nvme1n1
       The contents of file "$CALLS" should include 'DeviceName=/dev/sdf'
+    End
+
+    # A failed DeleteOnTermination is logged loudly but must not abort the attach.
+    It 'logs an ERR but still returns the device when DeleteOnTermination never succeeds'
+      MODIFY_RC=1
+      When run create_and_attach_volume
+      The status should be success
+      The output should equal /dev/nvme1n1
+      The stderr should include 'DeleteOnTermination NOT enabled'
+      The result of function modify_calls should equal 5
+      The contents of file "$CALLS" should not include 'delete-volume'
     End
 
     # If the volume never becomes available it must be deleted, not leaked.
