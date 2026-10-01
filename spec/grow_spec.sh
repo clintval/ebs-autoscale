@@ -45,6 +45,8 @@ Describe 'bin/ebs-autoscale growth attempts'
   }
   create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
+  # shellcheck disable=SC2016
+  create_at_limit() { printf '#!/bin/sh\necho create >> "$CREATES"\nexit 2\n' > "$CREATE_VOLUME"; }
   create_count() { wc -l < "$CREATES" | tr -d ' '; }
   aws_call_count() { wc -l < "$CALLS" | tr -d ' '; }
 
@@ -92,6 +94,32 @@ Describe 'bin/ebs-autoscale growth attempts'
       attempt_grow 95
       When call attempt_grow 95
       The status should equal 1
+    End
+  End
+
+  Describe 'when create-ebs-volume reports a limit'
+    It 'reports a growth limit'
+      create_at_limit
+      When call add_space 1 100
+      The status should equal 2
+    End
+
+    It 'waits 5 minutes before trying again'
+      create_at_limit
+      attempt_grow 95
+      NOW=1299
+      When call attempt_grow 95
+      The status should equal 1
+      The value "$(create_count)" should equal 1
+    End
+
+    It 'tries again after 5 minutes'
+      create_at_limit
+      attempt_grow 95
+      NOW=1300
+      When call attempt_grow 95
+      The status should be success
+      The value "$(create_count)" should equal 2
     End
   End
 

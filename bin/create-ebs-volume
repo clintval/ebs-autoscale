@@ -30,6 +30,7 @@
 
 # Creates one EBS volume, attaches it to this instance, enables
 # DeleteOnTermination, and prints the resulting block device path on stdout.
+# Exits 2 when a limit forbids another volume and 1 on any other failure.
 # Targets Amazon Linux 2023 on Nitro, where attached volumes appear as
 # /dev/nvme*n1 rather than at the /dev/sd* name passed to attach-volume.
 
@@ -70,6 +71,11 @@ USAGE_EOF
 error() {
     logerr "$1"
     exit 1
+}
+
+limit_reached() {
+    logerr "$1"
+    exit 2
 }
 
 # get_next_logical_device CLAIMED
@@ -242,13 +248,13 @@ create_and_attach_volume() {
         '.Volumes[].Attachments[]? | select(.InstanceId == $iid) | .Device')
 
     if [ "$total_created_size" -ge "$MAX_LOGICAL_VOLUME_SIZE" ]; then
-        error "maximum total EBS volume size reached (${MAX_LOGICAL_VOLUME_SIZE} GB)"
+        limit_reached "maximum total EBS volume size reached (${MAX_LOGICAL_VOLUME_SIZE} GB)"
     fi
     if [ "$created_count" -ge "$MAX_CREATED_VOLUMES" ]; then
-        error "maximum number of created volumes reached (${MAX_CREATED_VOLUMES})"
+        limit_reached "maximum number of created volumes reached (${MAX_CREATED_VOLUMES})"
     fi
     if [ "$attached_count" -ge "$MAX_ATTACHED_VOLUMES" ]; then
-        error "maximum number of attached volumes reached (${MAX_ATTACHED_VOLUMES})"
+        limit_reached "maximum number of attached volumes reached (${MAX_ATTACHED_VOLUMES})"
     fi
 
     local bdm_device

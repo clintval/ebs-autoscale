@@ -108,11 +108,36 @@ Describe 'bin/create-ebs-volume volume creation'
       The stderr should not include 'deleted it'
     End
 
+    # A reached limit exits 2 so callers can tell it from a failure.
+    It 'exits 2 without creating a volume at the total created size limit'
+      MAX_LOGICAL_VOLUME_SIZE=0
+      When run create_and_attach_volume
+      The status should equal 2
+      The stderr should include 'maximum total EBS volume size'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'exits 2 without creating a volume at the created volume limit'
+      MAX_CREATED_VOLUMES=0
+      When run create_and_attach_volume
+      The status should equal 2
+      The stderr should include 'maximum number of created volumes'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'exits 2 without creating a volume at the attached volume limit'
+      MAX_ATTACHED_VOLUMES=0
+      When run create_and_attach_volume
+      The status should equal 2
+      The stderr should include 'maximum number of attached volumes'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
     # A failed attach must also delete the just-created volume.
     It 'deletes the volume when the attach fails'
       ATTACH_RC=1
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The stdout should equal ""
       The stderr should include 'could not attach'
       The contents of file "$CALLS" should include 'delete-volume'
