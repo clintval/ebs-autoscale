@@ -78,6 +78,14 @@ Describe 'bin/create-ebs-volume volume creation'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
+    It 'refuses a first volume larger than the max total size'
+      SIZE=8001
+      When run create_and_attach_volume
+      The status should be failure
+      The stderr should include 'would exceed the maximum total EBS volume size'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
     It 'creates a volume that brings the total created size exactly to the max'
       OWNED_VOLUMES='{"Volumes":[{"Size":6500}]}'
       SIZE=1500
