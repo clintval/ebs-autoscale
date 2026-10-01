@@ -182,13 +182,20 @@ vg_free_extents() {
     lvm_report vgs --noheadings -o vg_free_count "$LVM_VG" | tr -d ' '
 }
 
-# vg_members -> the VG's physical volumes as device paths; pvs reports EC2's /dev/sdX aliases.
-vg_members() {
-    local report pv
+# pv_table -> "DEVICE VG" for every PV, VG empty when in none; pvs reports EC2's /dev/sdX aliases.
+pv_table() {
+    local report pv vg
     report=$(lvm_report pvs --noheadings -o pv_name,vg_name) || return 1
-    for pv in $(printf '%s\n' "$report" | awk -v vg="$LVM_VG" '$2 == vg { print $1 }'); do
-        readlink -f "$pv"
+    printf '%s\n' "$report" | while read -r pv vg; do
+        if [ -n "$pv" ]; then
+            printf '%s %s\n' "$(readlink -f "$pv")" "$vg"
+        fi
     done
+}
+
+# disk_is_blank DEV -> 0 if DEV has no filesystem, partition table or partitions.
+disk_is_blank() {
+    lsblk -nro NAME,FSTYPE,PTTYPE "$1" 2>>"$EBS_AUTOSCALE_LOG_FILE" | awk 'END { exit !(NR == 1 && NF == 1) }'
 }
 
 # device_volume_id SERIALS DEV -> DEV's EBS volume ID from `lsblk -dno NAME,SERIAL` output,
@@ -206,10 +213,10 @@ device_volume_id() {
     esac
 }
 
-# fold_stray_volumes: grow onto this instance's attached autoscaled volumes that are not in the VG.
-# Returns 0 if it folded any, 1 if there were none, 2 on failure.
+# fold_stray_volumes: grow onto this instance's attached autoscaled volumes that are not in the VG,
+# if blank or a PV in no VG. Returns 0 if it folded any, 1 if there were none, 2 on failure.
 fold_stray_volumes() {
-    local response volume_ids members serials dev id vol
+    local response volume_ids pvs_table serials dev pv_vg id vol
     local folded=1
     response=$(describe_owned_volumes)
     if [ -z "$response" ] || ! volume_ids=$(printf '%s' "$response" \
@@ -222,16 +229,25 @@ fold_stray_volumes() {
         return 2
     fi
     [ -n "$volume_ids" ] || return 1
-    members=$(vg_members) || return 2
+    pvs_table=$(pv_table) || return 2
     if ! serials=$(lsblk -dno NAME,SERIAL 2>>"$EBS_AUTOSCALE_LOG_FILE"); then
         logerr "lsblk failed to list device serials"
         return 2
     fi
     for dev in $(_nvme_candidates); do
-        printf '%s\n' "$members" | grep -qxF -- "$dev" && continue
+        # Empty when DEV is not a PV, "-" when it is a PV in no VG.
+        pv_vg=$(printf '%s\n' "$pvs_table" | awk -v d="$dev" '$1 == d { print (NF > 1 ? $2 : "-") }')
+        [ "$pv_vg" = "$LVM_VG" ] && continue
         id=$(device_volume_id "$serials" "$dev")
         for vol in $volume_ids; do
             [ -n "$id" ] && [ "$vol" = "$id" ] || continue
+            if [ -n "$pv_vg" ] && [ "$pv_vg" != - ]; then
+                logerr "not folding stray volume ${vol} (${dev}): it is in volume group ${pv_vg}"
+                break
+            elif [ -z "$pv_vg" ] && ! disk_is_blank "$dev"; then
+                logerr "not folding stray volume ${vol} (${dev}): it has a filesystem or partitions"
+                break
+            fi
             loginfo "folding stray volume ${vol} (${dev}) into ${LVM_VG}"
             if ! grow_filesystem "$dev"; then
                 logerr "failed to fold ${vol} (${dev}) into ${LVM_VG}"

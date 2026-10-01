@@ -354,10 +354,17 @@ Describe 'bin/ebs-autoscale growth attempts'
       echo /dev/nvme3n1 > "$CREATE_OUTPUT"
       grow_filesystem() { echo "$1" >> "$GROWS"; return "$GROW_RC"; }
       _nvme_candidates() { printf '%s\n' "$LSBLK" | awk '{print "/dev/" $1}'; }
-      # Mimics lsblk -dno NAME,SERIAL for every disk, or -dno SERIAL DEV for one.
+      # Mimics lsblk -dno NAME,SERIAL for every disk, -dno SERIAL DEV for one, and
+      # -nro NAME,FSTYPE,PTTYPE DEV from the DISKS rows for DEV and its partitions.
+      DISKS=''
       lsblk() {
         case "$*" in
           *NAME,SERIAL*) printf '%s\n' "$LSBLK" ;;
+          *FSTYPE*)
+            for dev; do :; done
+            printf '%s\n' "$DISKS" | awk -v n="${dev#/dev/}" \
+              '$1 == n || index($1, n "p") == 1 { print; found = 1 } END { if (!found) print n "  " }'
+            ;;
           *) for dev; do :; done; printf '%s\n' "$LSBLK" | awk -v n="${dev#/dev/}" '$1 == n {print $2}' ;;
         esac
       }
@@ -410,8 +417,27 @@ Describe 'bin/ebs-autoscale growth attempts'
 
     It 'folds a physical volume that is in no volume group'
       PVS=$(printf '  /dev/sdf   autoscale_vg\n  /dev/sdg               ')
+      DISKS='nvme2n1 LVM2_member '
       When call attempt_grow 95
       The contents of file "$GROWS" should equal /dev/nvme2n1
+    End
+
+    Describe 'that is not blank'
+      Parameters
+        'with a filesystem' 'nvme2n1 ext4 ' '  /dev/sdf   autoscale_vg' 'it has a filesystem or partitions'
+        'with partitions' "$(printf 'nvme2n1  gpt\nnvme2n1p1 xfs ')" '  /dev/sdf   autoscale_vg' 'it has a filesystem or partitions'
+        'in another volume group' 'nvme2n1 LVM2_member ' "$(printf '  /dev/sdf   autoscale_vg\n  /dev/sdg   data_vg')" 'it is in volume group data_vg'
+      End
+
+      It "skips one $1 with a warning and creates a volume"
+        DISKS=$2
+        PVS=$3
+        When call attempt_grow 95
+        The status should be success
+        The stderr should include "not folding stray volume vol-0b2c3d4e5f6071829 (/dev/nvme2n1): $4"
+        The contents of file "$GROWS" should equal /dev/nvme3n1
+        The value "$(create_count)" should equal 1
+      End
     End
 
     It 'creates a volume once every attached volume is in the volume group'
