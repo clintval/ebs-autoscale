@@ -84,7 +84,7 @@ describe_trigger() {
     fi
 }
 
-# calc_new_size NUM_DEVICES AUTOSCALED_GB [SHORTFALL_GB] -> GB by device count, or the shortfall if larger, capped at the room left.
+# calc_new_size NUM_DEVICES AUTOSCALED_GB [SHORTFALL_GB] -> GB by device count, or the padded shortfall if larger, capped at the room left.
 calc_new_size() {
     local num_devices="$1"
     local autoscaled_gb="$2"
@@ -110,9 +110,13 @@ calc_new_size() {
     elif [ "$num_devices" -gt 10 ]; then
         new_size="$MAX_EBS_VOLUME_SIZE"
     fi
-    if [ "$shortfall_gb" -gt 0 ] && [ "$shortfall_gb" -gt "$new_size" ]; then
-        new_size="$shortfall_gb"
-        [ "$new_size" -le "$MAX_EBS_VOLUME_SIZE" ] || new_size="$MAX_EBS_VOLUME_SIZE"
+    if [ "$shortfall_gb" -gt 0 ]; then
+        # Pad by 8%: ext4 keeps about 6.6% of each new volume (5% reserved blocks plus inode tables), which df's free space excludes.
+        [ "$shortfall_gb" -ge "$MAX_EBS_VOLUME_SIZE" ] || shortfall_gb=$(( (shortfall_gb * 108 + 99) / 100 ))
+        if [ "$shortfall_gb" -gt "$new_size" ]; then
+            new_size="$shortfall_gb"
+            [ "$new_size" -le "$MAX_EBS_VOLUME_SIZE" ] || new_size="$MAX_EBS_VOLUME_SIZE"
+        fi
     fi
     [ "$room_gb" -lt "$new_size" ] && new_size="$room_gb"
     echo "$new_size"

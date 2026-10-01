@@ -110,21 +110,37 @@ Describe 'bin/ebs-autoscale scaling ladders'
       When call calc_new_size 11 7700
       The output should equal 300
     End
-    It 'covers a shortfall larger than the step'
+    It 'pads a shortfall larger than the step by 8%'
       When call calc_new_size 1 0 700
-      The output should equal 700
+      The output should equal 756
     End
-    It 'keeps the step when the shortfall is smaller'
+    It 'pads a 500 GB shortfall to 540 GB'
+      When call calc_new_size 1 0 500
+      The output should equal 540
+    End
+    It 'rounds the padded shortfall up to a whole GB'
+      When call calc_new_size 1 0 151
+      The output should equal 164
+    End
+    It 'uses a padded shortfall that overtakes the step'
+      When call calc_new_size 1 0 140
+      The output should equal 152
+    End
+    It 'keeps the step when the padded shortfall is smaller'
       When call calc_new_size 5 0 200
       The output should equal 300
     End
-    It 'caps a shortfall at the max volume size'
-      When call calc_new_size 1 0 5000
+    It 'caps a padded shortfall at the max volume size'
+      When call calc_new_size 1 0 1450
       The output should equal 1500
     End
-    It 'caps a shortfall at what is left under the max total size'
-      When call calc_new_size 1 7500 700
-      The output should equal 500
+    It 'caps a shortfall too large to pad at the max volume size'
+      When call calc_new_size 1 0 999999999999999999
+      The output should equal 1500
+    End
+    It 'caps a padded shortfall at what is left under the max total size'
+      When call calc_new_size 1 7480 500
+      The output should equal 520
     End
     It 'does not turn a non-numeric size into the whole remaining budget'
       MAX_EBS_VOLUME_SIZE=null
