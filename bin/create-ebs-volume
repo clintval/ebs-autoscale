@@ -199,37 +199,23 @@ create_and_attach_volume() {
     local availability_zone="$AWS_AZ"
     local region="$AWS_REGION"
 
-    # One describe-volumes for all accounting: this instance only ever attaches
-    # volumes it created, so the source-instance set is a superset of what is
-    # attached. The AWS CLI's adaptive retry (set in initialize) handles throttling.
-    local owned
-    if ! owned=$(aws ec2 describe-volumes \
-        --region "$region" \
-        --filters "Name=tag:source-instance,Values=${instance_id}" \
-        --output json 2>/dev/null) || [ -z "$owned" ]; then
+    # The same accounting the daemon uses; the AWS CLI's adaptive retry (set in initialize) handles throttling.
+    if ! read_owned_volumes; then
         error "could not query EC2 for this instance's volumes"
     fi
 
-    local created_count total_created_size attached_count claimed_devices
-    created_count=$(printf '%s' "$owned" | jq '.Volumes | length')
-    total_created_size=$(printf '%s' "$owned" | jq '[.Volumes[].Size] | add // 0')
-    attached_count=$(printf '%s' "$owned" | jq --arg iid "$instance_id" \
-        '[.Volumes[] | select(any(.Attachments[]?; .InstanceId == $iid))] | length')
-    claimed_devices=$(printf '%s' "$owned" | jq -r --arg iid "$instance_id" \
-        '.Volumes[].Attachments[]? | select(.InstanceId == $iid) | .Device')
-
-    if [ "$SIZE" -gt $(( MAX_LOGICAL_VOLUME_SIZE - total_created_size )) ]; then
-        error "a ${SIZE} GB volume would exceed the maximum total EBS volume size (${total_created_size} of ${MAX_LOGICAL_VOLUME_SIZE} GB created)" 3
+    if [ "$SIZE" -gt $(( MAX_LOGICAL_VOLUME_SIZE - OWNED_CREATED_GB )) ]; then
+        error "a ${SIZE} GB volume would exceed the maximum total EBS volume size (${OWNED_CREATED_GB} of ${MAX_LOGICAL_VOLUME_SIZE} GB created)" 3
     fi
-    if [ "$created_count" -ge "$MAX_CREATED_VOLUMES" ]; then
+    if [ "$OWNED_CREATED_COUNT" -ge "$MAX_CREATED_VOLUMES" ]; then
         error "maximum number of created volumes reached (${MAX_CREATED_VOLUMES})" 3
     fi
-    if [ "$attached_count" -ge "$MAX_ATTACHED_VOLUMES" ]; then
+    if [ "$OWNED_ATTACHED_COUNT" -ge "$MAX_ATTACHED_VOLUMES" ]; then
         error "maximum number of attached volumes reached (${MAX_ATTACHED_VOLUMES})" 3
     fi
 
     local bdm_device
-    bdm_device=$(get_next_logical_device "$claimed_devices")
+    bdm_device=$(get_next_logical_device "$OWNED_CLAIMED_DEVICES")
     if [ -z "$bdm_device" ]; then
         error "no device names available for a new volume" 3
     fi

@@ -106,6 +106,42 @@ logthis() {
     loginfo "$1"
 }
 
+# Tag written to every volume this tool attaches; its presence distinguishes an
+# autoscaled volume from one attached for other reasons.
+CREATION_TAG=amazon-ebs-autoscale-creation-time
+
+# read_owned_volumes: one describe-volumes for this instance's volumes, ignoring deleting, deleted and
+# errored ones; sets OWNED_ATTACHED_COUNT, OWNED_ATTACHED_IDS, OWNED_CREATED_COUNT, OWNED_CREATED_GB
+# and OWNED_CLAIMED_DEVICES, or fails.
+# shellcheck disable=SC2034
+read_owned_volumes() {
+    local response summary
+    response=$(aws ec2 describe-volumes \
+        --region "$AWS_REGION" \
+        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
+        --output json 2>/dev/null) || return 1
+    [ -n "$response" ] || return 1
+    summary=$(printf '%s' "$response" | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" '
+        def str: type == "string";
+        if (.Volumes | type) == "array" and all(.Volumes[];
+            (.VolumeId | str) and (.State | str) and (.Size | type) == "number"
+            and (.Attachments | type) == "array"
+            and all(.Attachments[]; (.InstanceId | str) and (.State | str) and (.Device | str)))
+        then . else error("unexpected describe-volumes response") end
+        | [.Volumes[] | select(.State | . != "deleting" and . != "deleted" and . != "error")] as $volumes
+        | [$volumes[]
+            | select(any(.Tags[]?; .Key == $tag))
+            | select(any(.Attachments[]?; .InstanceId == $iid and .State == "attached"))
+            | .VolumeId] as $attached
+        | "\($attached | length) \($volumes | length) \([$volumes[].Size] | add // 0)",
+          ($attached | join(" ")),
+          ($volumes[].Attachments[]? | select(.InstanceId == $iid) | .Device)' 2>/dev/null) || return 1
+    { read -r OWNED_ATTACHED_COUNT OWNED_CREATED_COUNT OWNED_CREATED_GB; read -r OWNED_ATTACHED_IDS; } <<EOF
+$summary
+EOF
+    OWNED_CLAIMED_DEVICES=$(printf '%s\n' "$summary" | sed '1,2d')
+}
+
 # _nvme_candidates: print attached NVMe namespace devices, one per line.
 # Factored out (and overridable) so the resolver can be unit-tested.
 _nvme_candidates() {

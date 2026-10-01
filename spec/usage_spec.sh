@@ -18,12 +18,13 @@ Describe 'bin/ebs-autoscale get_autoscaled_usage'
   }
   Before 'setup'
 
-  # volume SIZE INSTANCE: one created volume, attached to INSTANCE (or
-  # detached when INSTANCE is empty), with the creation tag.
+  # volume SIZE INSTANCE [ATTACHMENT_STATE]: one created volume with the creation tag,
+  # attached to INSTANCE (or detached when INSTANCE is empty).
   volume() {
-    jq -nc --argjson size "$1" --arg iid "$2" \
-      '{Size: $size, Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}],
-        Attachments: (if $iid == "" then [] else [{InstanceId: $iid}] end)}'
+    jq -nc --argjson size "$1" --arg iid "$2" --arg state "${3:-attached}" \
+      '{VolumeId: "vol-0\($size)", Size: $size, State: (if $iid == "" then "available" else "in-use" end),
+        Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}],
+        Attachments: (if $iid == "" then [] else [{InstanceId: $iid, Device: "/dev/sdf", State: $state}] end)}'
   }
   volumes() {
     local IFS=,
@@ -56,9 +57,21 @@ Describe 'bin/ebs-autoscale get_autoscaled_usage'
   End
 
   It 'does not count attached volumes lacking the creation tag'
-    RESPONSE=$(jq -nc --arg iid i-0123 '{Volumes:[{Size:100, Attachments:[{InstanceId:$iid}]}]}')
+    RESPONSE=$(volumes "$(volume 100 i-0123 | jq -c '.Tags = []')")
     When call get_autoscaled_usage
     The output should equal '0 100'
+  End
+
+  It 'ignores a deleting volume in the count and the size'
+    RESPONSE=$(volumes "$(volume 100 i-0123)" "$(volume 200 '' | jq -c '.State = "deleting"')")
+    When call get_autoscaled_usage
+    The output should equal '1 100'
+  End
+
+  It 'does not count a volume whose attachment is detaching'
+    RESPONSE=$(volumes "$(volume 100 i-0123)" "$(volume 200 i-0123 detaching)")
+    When call get_autoscaled_usage
+    The output should equal '1 300'
   End
 
   It 'reports zero when there are no volumes'
@@ -75,6 +88,13 @@ Describe 'bin/ebs-autoscale get_autoscaled_usage'
 
   It 'fails without output when EC2 returns malformed output'
     RESPONSE='not json'
+    When call get_autoscaled_usage
+    The status should be failure
+    The output should equal ''
+  End
+
+  It 'fails without output when a volume lacks its size'
+    RESPONSE=$(volumes "$(volume 100 i-0123 | jq -c 'del(.Size)')")
     When call get_autoscaled_usage
     The status should be failure
     The output should equal ''

@@ -70,7 +70,7 @@ Describe 'bin/create-ebs-volume volume creation'
     End
 
     It 'exits 3 without creating a volume that would take the total created size past the max'
-      OWNED_VOLUMES='{"Volumes":[{"Size":7900}]}'
+      OWNED_VOLUMES='{"Volumes":[{"VolumeId":"vol-0a","Size":7900,"State":"available","Attachments":[]}]}'
       SIZE=1500
       When run create_and_attach_volume
       The status should equal 3
@@ -87,7 +87,7 @@ Describe 'bin/create-ebs-volume volume creation'
     End
 
     It 'creates a volume that brings the total created size exactly to the max'
-      OWNED_VOLUMES='{"Volumes":[{"Size":6500}]}'
+      OWNED_VOLUMES='{"Volumes":[{"VolumeId":"vol-0a","Size":6500,"State":"available","Attachments":[]}]}'
       SIZE=1500
       When run create_and_attach_volume
       The status should be success
@@ -174,6 +174,49 @@ Describe 'bin/create-ebs-volume volume creation'
       The status should equal 3
       The stderr should include 'no device names available'
       The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'exits 1 without creating a volume when describe-volumes returns non-JSON'
+      OWNED_VOLUMES='not json'
+      When run create_and_attach_volume
+      The status should equal 1
+      The stderr should include 'could not query EC2'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'exits 1 without creating a volume when a listed volume lacks its size'
+      OWNED_VOLUMES='{"Volumes":[{"VolumeId":"vol-0a","State":"available","Attachments":[]}]}'
+      When run create_and_attach_volume
+      The status should equal 1
+      The stderr should include 'could not query EC2'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'does not count a volume deleted after a failed attach toward the total created size'
+      OWNED_VOLUMES='{"Volumes":[{"VolumeId":"vol-0a","Size":6500,"State":"available","Attachments":[]},
+        {"VolumeId":"vol-0b","Size":1500,"State":"deleting","Attachments":[]}]}'
+      SIZE=1500
+      When run create_and_attach_volume
+      The status should be success
+      The output should equal /dev/nvme1n1
+    End
+
+    It 'does not count a deleted volume toward the created volume limit'
+      MAX_CREATED_VOLUMES=1
+      OWNED_VOLUMES='{"Volumes":[{"VolumeId":"vol-0b","Size":100,"State":"deleted","Attachments":[]}]}'
+      When run create_and_attach_volume
+      The status should be success
+      The output should equal /dev/nvme1n1
+    End
+
+    It 'does not count a detaching volume toward the attached volume limit'
+      MAX_ATTACHED_VOLUMES=1
+      OWNED_VOLUMES=$(jq -nc --arg iid "$INSTANCE_ID" '{Volumes: [{VolumeId: "vol-0a", Size: 100, State: "in-use",
+        Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}],
+        Attachments: [{InstanceId: $iid, Device: "/dev/sdf", State: "detaching"}]}]}')
+      When run create_and_attach_volume
+      The status should be success
+      The output should equal /dev/nvme1n1
     End
 
     Describe 'when describe-volumes'
@@ -369,7 +412,7 @@ Describe 'bin/create-ebs-volume volume creation'
         '  *instance-id*) echo i-0123 ;;' \
         'esac' > "$STUB_DIR/curl"
       printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> "$CALLS"' 'case "$*" in' \
-        "  *describe-volumes*) jq -nc '{Volumes: [range(16) | {Size: 10, Attachments: []}]}' ;;" \
+        "  *describe-volumes*) jq -nc '{Volumes: [range(16) | {VolumeId: \"vol-0\\(.)\", Size: 10, State: \"available\", Attachments: []}]}' ;;" \
         '  *) exit 1 ;;' \
         'esac' > "$STUB_DIR/aws"
       chmod +x "$STUB_DIR/curl" "$STUB_DIR/aws"

@@ -30,6 +30,7 @@ Describe 'bin/ebs-autoscale growth attempts'
     sleep() { :; }
     grow_filesystem() { return "$GROW_RC"; }
     _nvme_candidates() { :; }
+    lsblk() { :; }
     pvs() { :; }
     timeout() { shift 3; "$@"; }
     # Serves describe-volumes from VOLUMES_JSON and records each call.
@@ -44,7 +45,9 @@ Describe 'bin/ebs-autoscale growth attempts'
   # attached to this instance.
   set_volumes() {
     VOLUMES_JSON=$(jq -nc --argjson n "$1" --argjson size "$2" --arg iid "$INSTANCE_ID" \
-      '{Volumes: [range($n) | {Size: $size, Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}], Attachments: [{InstanceId: $iid}]}]}')
+      '{Volumes: [range($n) | {VolumeId: "vol-0\(.)", Size: $size, State: "in-use",
+        Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}],
+        Attachments: [{InstanceId: $iid, Device: "/dev/sd\([102 + .] | implode)", State: "attached"}]}]}')
   }
   create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
@@ -232,7 +235,7 @@ Describe 'bin/ebs-autoscale growth attempts'
           '  *instance-id*) echo i-0123 ;;' \
           'esac' > "$bin/curl"
         printf '%s\n' '#!/bin/sh' 'case "$*" in' \
-          "  *describe-volumes*) jq -nc '{Volumes: [{Size: 7900}]}' ;;" \
+          "  *describe-volumes*) jq -nc '{Volumes: [{VolumeId: \"vol-0a\", Size: 7900, State: \"available\", Attachments: []}]}' ;;" \
           '  *) exit 1 ;;' \
           'esac' > "$bin/aws"
         chmod +x "$bin/curl" "$bin/aws"
@@ -266,6 +269,13 @@ Describe 'bin/ebs-autoscale growth attempts'
       The status should be success
       The value "$NUM_DEVICES $THRESHOLD" should equal '4 80'
     End
+
+    It 'made one describe-volumes call'
+      When call attempt_grow 95
+      The status should be success
+      The value "$(create_count)" should equal 1
+      The value "$(aws_call_count)" should equal 1
+    End
   End
 
   Describe 'when the refreshed device count raises the threshold'
@@ -294,7 +304,7 @@ Describe 'bin/ebs-autoscale growth attempts'
       When run run_daemon
       The status should be success
       The value "$(create_count)" should equal 0
-      The value "$(aws_call_count)" should equal 3
+      The value "$(aws_call_count)" should equal 2
     End
   End
 
@@ -402,6 +412,12 @@ Describe 'bin/ebs-autoscale growth attempts'
     It 'counts the folded volume as attached'
       When call attempt_grow 95
       The value "$NUM_DEVICES" should equal 2
+    End
+
+    It 'folds it and counts volumes from one describe-volumes call'
+      When call attempt_grow 95
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+      The value "$(aws_call_count)" should equal 1
     End
 
     It 'folds it even when it fills the attached volume limit'
