@@ -52,7 +52,8 @@ get_num_devices() {
         --region "$AWS_REGION" \
         --filters "Name=attachment.instance-id,Values=${INSTANCE_ID}" "Name=tag-key,Values=${CREATION_TAG}" \
         --output json 2>/dev/null)
-    printf '%s' "${response:-'{"Volumes":[]}'}" | jq '.Volumes | length'
+    [ -n "$response" ] || response='{"Volumes":[]}'
+    printf '%s' "$response" | jq '.Volumes | length'
 }
 
 # Total GB of EBS this instance has created (the autoscaled space), independent
