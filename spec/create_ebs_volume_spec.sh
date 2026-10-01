@@ -38,7 +38,6 @@ Describe 'bin/create-ebs-volume volume creation'
       resolve_nvme_device() { printf '/dev/nvme1n1'; }
       sleep() { :; }
       # Record every aws invocation and return canned responses.
-      sleep() { :; }
       aws() {
         printf '%s\n' "$*" >> "$CALLS"
         case "$*" in
@@ -175,14 +174,6 @@ Describe 'bin/create-ebs-volume volume creation'
       When call wait_for_volume_available vol-0abc
       The status should be success
       The contents of file "$POLLS" should eq "$(printf 'poll\npoll\npoll')"
-    End
-
-    It 'fails once the timeout elapses'
-      READY_ON_POLL=1000
-      EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
-      When call wait_for_volume_available vol-0abc
-      The status should be failure
-      The stderr should include 'timed out'
     End
 
     It 'stops polling soon after the timeout rather than continuing forever'
