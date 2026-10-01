@@ -348,15 +348,32 @@ Describe 'bin/ebs-autoscale growth attempts'
       LSBLK=$(fixture lsblk-name-serial.txt)
       PVS=$(fixture pvs-pv-vg.txt)
       ALIASES=$(fixture udev-aliases.txt)
-      EBSNVME=false
       EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.log"
       GROWS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.grows"
       : > "$EBS_AUTOSCALE_LOG_FILE"; : > "$GROWS"
       echo /dev/nvme3n1 > "$CREATE_OUTPUT"
       grow_filesystem() { echo "$1" >> "$GROWS"; return "$GROW_RC"; }
       _nvme_candidates() { printf '%s\n' "$LSBLK" | awk '{print "/dev/" $1}'; }
-      # Prints the SERIAL column for the last argument, like lsblk -dno SERIAL DEV.
-      lsblk() { for dev; do :; done; printf '%s\n' "$LSBLK" | awk -v n="${dev#/dev/}" '$1 == n {print $2}'; }
+      # Mimics lsblk -dno NAME,SERIAL for every disk, or -dno SERIAL DEV for one.
+      lsblk() {
+        case "$*" in
+          *NAME,SERIAL*) printf '%s\n' "$LSBLK" ;;
+          *) for dev; do :; done; printf '%s\n' "$LSBLK" | awk -v n="${dev#/dev/}" '$1 == n {print $2}' ;;
+        esac
+      }
+      # ebsnvme-id knows the EBS devices in EBSNVME_IDS and rejects every other device.
+      EBSNVME="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.ebsnvme-id"
+      EBSNVME_CALLS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.ebsnvme-calls"
+      EBSNVME_IDS=$(printf '%s\n' "$LSBLK" | awk '$2 ~ /^vol/ { print $1, "vol-" substr($2, 4) }')
+      : > "$EBSNVME_CALLS"
+      export EBSNVME_CALLS EBSNVME_IDS
+      # shellcheck disable=SC2016
+      printf '%s\n' '#!/bin/sh' 'echo "$*" >> "$EBSNVME_CALLS"' 'for d; do :; done' \
+        'id=$(printf "%s\n" "$EBSNVME_IDS" | awk -v n="${d#/dev/}" "\$1 == n { print \$2 }")' \
+        '[ -n "$id" ] || { echo "[ERROR] Not an EBS device: $d" >&2; exit 1; }' \
+        'echo "Volume ID: $id"' > "$EBSNVME"
+      chmod +x "$EBSNVME"
+      ebsnvme_calls() { wc -l < "$EBSNVME_CALLS" | tr -d ' '; }
       pvs() { printf '%s\n' "$PVS"; }
       # Resolves the /dev/sdX aliases that pvs reports to their NVMe devices.
       readlink() { printf '%s\n' "$ALIASES" | awk -v p="$2" '$1 == p {print $2; found = 1} END {if (!found) print p}'; }
@@ -448,6 +465,25 @@ Describe 'bin/ebs-autoscale growth attempts'
       The stderr should include 'pvs failed (status 124)'
       The contents of file "$TIMEOUTS" should equal '-k 6 60 pvs --noheadings -o pv_name,vg_name'
       The value "$(create_count)" should equal 0
+    End
+
+    Describe 'alongside instance-store disks'
+      It 'matches devices by serial without running ebsnvme-id or logging per volume'
+        LSBLK=$(printf '%s\nnvme4n1 AWS0XYZ\nnvme5n1 AWS1XYZ\nnvme6n1 AWS2XYZ\nnvme7n1 AWS3XYZ' "$LSBLK")
+        When call attempt_grow 95
+        The contents of file "$GROWS" should equal /dev/nvme2n1
+        The value "$(ebsnvme_calls)" should equal 0
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'Not an EBS device'
+      End
+
+      It 'runs ebsnvme-id once for each device that has no serial'
+        LSBLK=$(printf 'nvme0n1 vol0f0e1d2c3b4a59687\nnvme1n1 vol0a1b2c3d4e5f60718\nnvme2n1\nnvme4n1\nnvme5n1\nnvme6n1')
+        EBSNVME_IDS='nvme2n1 vol-0b2c3d4e5f6071829'
+        When call attempt_grow 95
+        The contents of file "$GROWS" should equal /dev/nvme2n1
+        The value "$(ebsnvme_calls)" should equal 4
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'Not an EBS device'
+      End
     End
 
     Describe 'when the daemon starts'

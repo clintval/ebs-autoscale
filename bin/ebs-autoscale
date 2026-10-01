@@ -191,10 +191,25 @@ vg_members() {
     done
 }
 
+# device_volume_id SERIALS DEV -> DEV's EBS volume ID from `lsblk -dno NAME,SERIAL` output,
+# asking ebsnvme-id only when DEV has no serial; empty for any other device.
+device_volume_id() {
+    local serial ebsnvme
+    serial=$(printf '%s\n' "$1" | awk -v name="${2#/dev/}" '$1 == name { print $2 }')
+    case "$serial" in
+        vol-*) printf '%s' "$serial" ;;
+        vol?*) printf 'vol-%s' "${serial#vol}" ;;
+        '')
+            ebsnvme=${EBSNVME:-$(command -v ebsnvme-id 2>/dev/null || echo /usr/sbin/ebsnvme-id)}
+            "$ebsnvme" -v "$2" 2>/dev/null | awk '/Volume ID:/ { print $3 }'
+            ;;
+    esac
+}
+
 # fold_stray_volumes: grow onto this instance's attached autoscaled volumes that are not in the VG.
 # Returns 0 if it folded any, 1 if there were none, 2 on failure.
 fold_stray_volumes() {
-    local response volume_ids members dev vol
+    local response volume_ids members serials dev id vol
     local folded=1
     response=$(describe_owned_volumes)
     if [ -z "$response" ] || ! volume_ids=$(printf '%s' "$response" \
@@ -208,10 +223,15 @@ fold_stray_volumes() {
     fi
     [ -n "$volume_ids" ] || return 1
     members=$(vg_members) || return 2
+    if ! serials=$(lsblk -dno NAME,SERIAL 2>>"$EBS_AUTOSCALE_LOG_FILE"); then
+        logerr "lsblk failed to list device serials"
+        return 2
+    fi
     for dev in $(_nvme_candidates); do
         printf '%s\n' "$members" | grep -qxF -- "$dev" && continue
+        id=$(device_volume_id "$serials" "$dev")
         for vol in $volume_ids; do
-            match_nvme_device "$dev" "$vol" "$(printf '%s' "$vol" | tr -d -)" || continue
+            [ -n "$id" ] && [ "$vol" = "$id" ] || continue
             loginfo "folding stray volume ${vol} (${dev}) into ${LVM_VG}"
             if ! grow_filesystem "$dev"; then
                 logerr "failed to fold ${vol} (${dev}) into ${LVM_VG}"
