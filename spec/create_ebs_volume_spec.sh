@@ -47,7 +47,10 @@ Describe 'bin/create-ebs-volume volume creation'
           *create-volume*)               echo '{"VolumeId":"vol-0abc"}' ;;
           *attach-volume*)               return "${ATTACH_RC:-0}" ;;
           *modify-instance-attribute*)   return "${MODIFY_RC:-0}" ;;
-          *delete-volume*)               return 0 ;;
+          *delete-volume*)
+            [ "${DELETE_RC:-0}" -eq 0 ] || echo 'An error occurred (IncorrectState)' >&2
+            return "${DELETE_RC:-0}"
+            ;;
           *)                             return 0 ;;
         esac
       }
@@ -92,6 +95,17 @@ Describe 'bin/create-ebs-volume volume creation'
       The status should be failure
       The stderr should include 'timed out'
       The contents of file "$CALLS" should include 'delete-volume'
+    End
+
+    It 'reports a possible leak when a timed-out volume cannot be deleted'
+      VOLUME_STATE=creating
+      EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
+      DELETE_RC=1
+      When run create_and_attach_volume
+      The status should be failure
+      The stderr should include 'could not be deleted'
+      The stderr should include 'IncorrectState'
+      The stderr should not include 'deleted it'
     End
 
     # A failed attach must also delete the just-created volume.

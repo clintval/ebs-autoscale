@@ -291,7 +291,10 @@ create_and_attach_volume() {
     # If the volume never becomes available, delete it rather than leaking it
     # and then attaching something that is not ready.
     if ! wait_for_volume_available "$volume_id"; then
-        aws ec2 delete-volume --region "$region" --volume-id "$volume_id" >/dev/null 2>&1
+        local delete_err
+        if ! delete_err=$(aws ec2 delete-volume --region "$region" --volume-id "$volume_id" 2>&1 >/dev/null); then
+            error "volume ${volume_id} did not become available and could not be deleted, so it may leak: ${delete_err}"
+        fi
         error "volume ${volume_id} did not become available; deleted it"
     fi
 
