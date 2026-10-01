@@ -14,8 +14,18 @@ permissions:
 
 jobs:
   test:
-    name: Run the shellspec suite
+    name: Run the shellspec suite under ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bash
+            shell: bash
+          - name: dash (Debian and Ubuntu /bin/sh)
+            shell: dash
+          - name: bash --posix (Amazon Linux 2023 /bin/sh)
+            shell: bash --posix
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -25,4 +35,6 @@ jobs:
           git clone --depth 1 --branch 0.28.1 https://github.com/shellspec/shellspec /tmp/shellspec
           echo "/tmp/shellspec" >> "$GITHUB_PATH"
       - name: Run the specs
-        run: make test-sh
+        env:
+          SPEC_SHELL: ${{ matrix.shell }}
+        run: make test-sh SPEC_SHELL="$SPEC_SHELL"
