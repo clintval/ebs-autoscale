@@ -185,6 +185,12 @@ Describe 'bin/ebs-autoscale growth attempts'
       The status should equal 2
       The value "$(create_count)" should equal 0
     End
+
+    It 'passes its max total size to create-ebs-volume'
+      When call add_space 11 100
+      The status should be success
+      The contents of file "$CREATES" should include '--max-total-created-size 8000'
+    End
   End
 
   Describe 'after a successful grow'
