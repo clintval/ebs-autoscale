@@ -137,6 +137,7 @@ The installer accepts the following options:
 A percentage is a poor trigger for a large initial volume (50% of 2 TiB grows with 1 TiB still free), so use `--min-free-space` there to grow on absolute free space instead.
 It replaces the utilization thresholds entirely and cannot be combined with `--initial-utilization-threshold`.
 If the floor exceeds the free space on the initial volume, volumes are added right after start-up until it is met.
+Pick a floor larger than what your jobs can write during one grow, which takes about a minute or two.
 
 When install creates the initial volume, it counts toward `--max-total-created-size`, and install fails if `--initial-size` exceeds it.
 The runtime config is written to `/etc/ebs-autoscale.json`; override the path with `EBS_AUTOSCALE_CONFIG_FILE`.
