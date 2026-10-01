@@ -69,19 +69,19 @@ Describe 'bin/create-ebs-volume volume creation'
       The contents of file "$CALLS" should include 'DeviceName=/dev/sdf'
     End
 
-    It 'refuses a volume that would take the total created size past the max'
+    It 'exits 3 without creating a volume that would take the total created size past the max'
       OWNED_VOLUMES='{"Volumes":[{"Size":7900}]}'
       SIZE=1500
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 3
       The stderr should include 'would exceed the maximum total EBS volume size'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
-    It 'refuses a first volume larger than the max total size'
+    It 'exits 3 without creating a first volume larger than the max total size'
       SIZE=8001
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 3
       The stderr should include 'would exceed the maximum total EBS volume size'
       The contents of file "$CALLS" should not include 'create-volume'
     End

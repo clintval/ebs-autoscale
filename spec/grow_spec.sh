@@ -212,6 +212,47 @@ Describe 'bin/ebs-autoscale growth attempts'
         The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'min='
       End
     End
+
+    Describe 'when create-ebs-volume refuses at the size limit'
+      # Runs the real create-ebs-volume against stub IMDS and EC2 that already count
+      # 7900 GB; its config allows 10000 GB, so only the daemon's 8000 GB refuses.
+      # shellcheck disable=SC2016
+      real_create_volume() {
+        local bin="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.real-create-bin"
+        local cfg="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.real-create-config.json"
+        mkdir -p "$bin"
+        echo '{"volume": {"type": "gp3", "iops": 3000, "throughput": 125, "encrypted": 1},
+          "limits": {"max_logical_volume_size": 10000, "max_ebs_volume_count": 16}}' > "$cfg"
+        printf '%s\n' '#!/bin/sh' 'case "$*" in' \
+          '  *api/token*) echo token ;;' \
+          '  *availability-zone*) echo us-west-2a ;;' \
+          '  *instance-id*) echo i-0123 ;;' \
+          'esac' > "$bin/curl"
+        printf '%s\n' '#!/bin/sh' 'case "$*" in' \
+          "  *describe-volumes*) jq -nc '{Volumes: [{Size: 7900}]}' ;;" \
+          '  *) exit 1 ;;' \
+          'esac' > "$bin/aws"
+        chmod +x "$bin/curl" "$bin/aws"
+        printf '%s\n' '#!/bin/sh' \
+          "exec env -u SHELLSPEC_VERSION PATH=\"${bin}:\$PATH\" EBS_AUTOSCALE_CONFIG_FILE=\"${cfg}\" sh \"$(script_path bin/create-ebs-volume)\" \"\$@\"" \
+          > "$CREATE_VOLUME"
+      }
+      Before 'real_create_volume'
+
+      It 'makes add_space report a growth limit'
+        When call add_space 11 6490
+        The status should equal 2
+        The stderr should include 'would exceed the maximum total EBS volume size (7900 of 8000 GB created)'
+      End
+
+      It 'makes the daemon wait 5 minutes before trying again'
+        set_volumes 11 590
+        When call attempt_grow 95
+        The status should be success
+        The stderr should include 'would exceed the maximum total EBS volume size'
+        The value "$NEXT_GROW_ATTEMPT" should equal 1300
+      End
+    End
   End
 
   Describe 'after a successful grow'
