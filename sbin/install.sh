@@ -129,15 +129,14 @@ if [ "$THRESHOLD_GIVEN" -eq 1 ] && [ "$MIN_FREE_SPACE_GIVEN" -eq 1 ]; then
     exit 1
 fi
 
-# 0 means off, so an explicit 0 would silently do nothing, and a leading zero
-# would be read as octal by the daemon's arithmetic.
+# 0 would silently mean off, and a leading zero would read as octal in the daemon's $(( )) arithmetic.
 if [ "$MIN_FREE_SPACE_GIVEN" -eq 1 ]; then
     case "$MIN_FREE_SPACE" in
         ''|*[!0-9]*|0*)
             echo "error: --min-free-space must be a positive integer number of GB, got '${MIN_FREE_SPACE}'." >&2
             exit 1 ;;
     esac
-    # Free space never exceeds the created total, so a floor at or over it would grow until the budget is spent.
+    # A floor at or over the created total could keep the daemon growing until the budget is spent.
     if ! [ "$MIN_FREE_SPACE" -lt "$MAX_LOGICAL_VOLUME_SIZE" ] 2>/dev/null; then
         echo "error: --min-free-space must be less than --max-total-created-size (${MAX_LOGICAL_VOLUME_SIZE} GB), got '${MIN_FREE_SPACE}'." >&2
         exit 1

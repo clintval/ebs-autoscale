@@ -28,10 +28,9 @@
 #  IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
 
-# The autoscaling daemon. Polls filesystem utilization and, when it crosses a
-# device-count-dependent threshold or free space falls below min_free_space,
-# creates and folds in another EBS volume via create-ebs-volume. Amazon Linux
-# 2023, systemd, lvm.ext4 only.
+# The autoscaling daemon. Adds an EBS volume via create-ebs-volume when utilization
+# crosses a device-count-dependent threshold or, in the exclusive free-space mode,
+# when free space falls below min_free_space. Amazon Linux 2023, systemd, lvm.ext4 only.
 
 # 'local' is supported by dash and bash, the shells this runs under on AL2023.
 # shellcheck disable=SC3043
@@ -65,9 +64,7 @@ calc_threshold() {
 # Bytes per GB as EBS counts them (GiB).
 BYTES_PER_GB=1073741824
 
-# space_is_low PCT AVAIL_BYTES -> 0 if a grow is due. With MIN_FREE_SPACE set the
-# decision is free space alone and the utilization thresholds are ignored.
-# Compares in whole GB so a floor mistakenly given in bytes cannot overflow.
+# space_is_low PCT AVAIL_BYTES -> 0 if free space is under MIN_FREE_SPACE GB when that is set, else if PCT is at THRESHOLD.
 space_is_low() {
     local pct="$1"
     local avail_bytes="$2"
@@ -325,7 +322,7 @@ GROW_RETRY_MAX_DELAY=300
 GROW_RETRY_DELAY=0
 NEXT_GROW_ATTEMPT=0
 
-# Set at startup and after a failed attempt, so strays are folded even under the threshold.
+# Set at startup and after a failed attempt, so strays are folded even when space is not low.
 RECONCILE_PENDING=1
 
 # Whole seconds of uptime, a monotonic clock that chrony cannot step.
@@ -335,8 +332,7 @@ now_seconds() {
     printf '%s' "${uptime%.*}"
 }
 
-# attempt_grow PCT AVAIL_BYTES: folds stray volumes, refreshes NUM_DEVICES and THRESHOLD,
-# then grows if space_is_low still holds. Returns 1 if skipped while backing off, else 0.
+# attempt_grow PCT [AVAIL_BYTES]: folds strays, refreshes NUM_DEVICES and THRESHOLD, grows if space_is_low; 1 if backing off.
 attempt_grow() {
     local pct="$1"
     local avail_bytes="${2:-}"
