@@ -23,6 +23,68 @@ Describe 'bin/ebs-autoscale scaling ladders'
     End
   End
 
+  Describe 'space_is_low'
+    GB=1073741824
+    setup() { THRESHOLD=50; MIN_FREE_SPACE=0; }
+    Before 'setup'
+
+    Describe 'in percentage mode'
+      It 'is low at the threshold'
+        When call space_is_low 999999999999 50
+        The status should be success
+      End
+      It 'is not low under the threshold, however little space is left'
+        When call space_is_low 1 49
+        The status should be failure
+      End
+      It 'is not low when the utilization is empty'
+        When call space_is_low 1 ''
+        The status should be failure
+      End
+      It 'follows the device-count threshold'
+        THRESHOLD=80
+        When call space_is_low 1 79
+        The status should be failure
+      End
+    End
+
+    Describe 'in free-space mode'
+      setup_floor() { MIN_FREE_SPACE=100; }
+      Before 'setup_floor'
+
+      It 'is low when free space is under the floor even at low utilization'
+        When call space_is_low $(( 99 * GB )) 5
+        The status should be success
+      End
+      It 'is low for a floor too large to express in bytes'
+        MIN_FREE_SPACE=107374182400
+        When call space_is_low $(( 99 * GB )) 5
+        The status should be success
+      End
+      It 'is not low when free space equals the floor'
+        When call space_is_low $(( 100 * GB )) 99
+        The status should be failure
+      End
+      It 'is not low when free space is over the floor even at 95% utilization'
+        When call space_is_low $(( 101 * GB )) 95
+        The status should be failure
+      End
+      It 'is low one byte under the floor'
+        When call space_is_low $(( 100 * GB - 1 )) 5
+        The status should be success
+      End
+      It 'ignores the utilization threshold'
+        THRESHOLD=10
+        When call space_is_low $(( 500 * GB )) 95
+        The status should be failure
+      End
+      It 'is not low when free space is unknown'
+        When call space_is_low '' 95
+        The status should be failure
+      End
+    End
+  End
+
   Describe 'calc_new_size'
     setup() { MIN_EBS_VOLUME_SIZE=150; MAX_EBS_VOLUME_SIZE=1500; MAX_LOGICAL_VOLUME_SIZE=8000; }
     Before 'setup'

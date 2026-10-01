@@ -51,6 +51,10 @@ MAX_EBS_VOLUME_SIZE=1500
 MAX_LOGICAL_VOLUME_SIZE=8000
 MAX_ATTACHED_VOLUMES=16
 INITIAL_UTILIZATION_THRESHOLD=50
+MIN_FREE_SPACE=0
+# Track explicit use so the default threshold does not trip the conflict check.
+THRESHOLD_GIVEN=0
+MIN_FREE_SPACE_GIVEN=0
 DETECTION_INTERVAL=2
 ENCRYPTED=1
 FILE_SYSTEM=lvm.ext4
@@ -77,6 +81,9 @@ Options
     --max-total-created-size SIZE_GB     Max total created size (default: 8000).
     --max-attached-volumes N             Max attached volumes (default: 16).
     --initial-utilization-threshold N    Scale-up threshold percent (default: 50).
+                                         Cannot be combined with --min-free-space.
+    --min-free-space SIZE_GB             Grow when free space falls below SIZE_GB;
+                                         replaces the utilization thresholds.
     --not-encrypted                      Create unencrypted volumes.
     -h, --help                           Print help and exit.
 
@@ -100,7 +107,8 @@ while [ "$#" -gt 0 ]; do
         --max-ebs-volume-size)              MAX_EBS_VOLUME_SIZE="$2"; shift 2 ;;
         --max-total-created-size)           MAX_LOGICAL_VOLUME_SIZE="$2"; shift 2 ;;
         --max-attached-volumes)             MAX_ATTACHED_VOLUMES="$2"; shift 2 ;;
-        --initial-utilization-threshold)    INITIAL_UTILIZATION_THRESHOLD="$2"; shift 2 ;;
+        --initial-utilization-threshold)    INITIAL_UTILIZATION_THRESHOLD="$2"; THRESHOLD_GIVEN=1; shift 2 ;;
+        --min-free-space)                   MIN_FREE_SPACE="$2"; MIN_FREE_SPACE_GIVEN=1; shift 2 ;;
         --not-encrypted)                    ENCRYPTED=0; shift ;;
         -i|--imdsv2)
             echo "warning: --imdsv2 is deprecated and ignored; IMDSv2 is always used" >&2
@@ -114,6 +122,21 @@ if [ "$FILE_SYSTEM" != "lvm.ext4" ]; then
     echo "error: unsupported --file-system '${FILE_SYSTEM}'." >&2
     echo "Only lvm.ext4 is supported; btrfs is unavailable in the Amazon Linux 2023 default repositories." >&2
     exit 1
+fi
+
+if [ "$THRESHOLD_GIVEN" -eq 1 ] && [ "$MIN_FREE_SPACE_GIVEN" -eq 1 ]; then
+    echo "error: --initial-utilization-threshold and --min-free-space cannot be combined; --min-free-space replaces the utilization thresholds." >&2
+    exit 1
+fi
+
+# 0 means off, so an explicit 0 would silently do nothing, and a leading zero
+# would be read as octal by the daemon's arithmetic.
+if [ "$MIN_FREE_SPACE_GIVEN" -eq 1 ]; then
+    case "$MIN_FREE_SPACE" in
+        ''|*[!0-9]*|0*)
+            echo "error: --min-free-space must be a positive integer number of GB, got '${MIN_FREE_SPACE}'." >&2
+            exit 1 ;;
+    esac
 fi
 
 # Strip a trailing slash so downstream mountpoint comparisons are stable.
@@ -138,6 +161,7 @@ render_config() {
         -e "s#%%MAXLOGICALVOLUMESIZE%%#${MAX_LOGICAL_VOLUME_SIZE}#" \
         -e "s#%%MAXATTACHEDVOLUMES%%#${MAX_ATTACHED_VOLUMES}#" \
         -e "s#%%INITIALUTILIZATIONTHRESHOLD%%#${INITIAL_UTILIZATION_THRESHOLD}#" \
+        -e "s#%%MINFREESPACE%%#${MIN_FREE_SPACE}#" \
         "${ROOT}/config/ebs-autoscale.json" > "$EBS_AUTOSCALE_CONFIG_FILE"
 }
 

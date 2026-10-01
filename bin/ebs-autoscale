@@ -29,8 +29,9 @@
 #  POSSIBILITY OF SUCH DAMAGE.
 
 # The autoscaling daemon. Polls filesystem utilization and, when it crosses a
-# device-count-dependent threshold, creates and folds in another EBS volume via
-# create-ebs-volume. Amazon Linux 2023, systemd, lvm.ext4 only.
+# device-count-dependent threshold or free space falls below min_free_space,
+# creates and folds in another EBS volume via create-ebs-volume. Amazon Linux
+# 2023, systemd, lvm.ext4 only.
 
 # 'local' is supported by dash and bash, the shells this runs under on AL2023.
 # shellcheck disable=SC3043
@@ -58,6 +59,22 @@ calc_threshold() {
         echo 90
     else
         echo "$INITIAL_UTILIZATION_THRESHOLD"
+    fi
+}
+
+# Bytes per GB as EBS counts them (GiB).
+BYTES_PER_GB=1073741824
+
+# space_is_low AVAIL_BYTES PCT -> 0 if a grow is due. With MIN_FREE_SPACE set the
+# decision is free space alone and the utilization thresholds are ignored.
+# Compares in whole GB so a floor mistakenly given in bytes cannot overflow.
+space_is_low() {
+    local avail_bytes="$1"
+    local pct="$2"
+    if [ "$MIN_FREE_SPACE" -gt 0 ]; then
+        [ -n "$avail_bytes" ] && [ $(( avail_bytes / BYTES_PER_GB )) -lt "$MIN_FREE_SPACE" ]
+    else
+        [ "${pct:-0}" -ge "$THRESHOLD" ]
     fi
 }
 
@@ -271,6 +288,8 @@ add_space() {
 # The attached volume count and the utilization percent that triggers a grow.
 NUM_DEVICES=0
 THRESHOLD=0
+# Free-space floor in GB; 0 selects the utilization thresholds.
+MIN_FREE_SPACE=0
 
 # Failed grows back off from 10 s, doubling to 5 min; a growth limit waits 5 min.
 GROW_RETRY_MIN_DELAY=10
@@ -288,10 +307,11 @@ now_seconds() {
     printf '%s' "${uptime%.*}"
 }
 
-# attempt_grow PCT: folds stray volumes, refreshes NUM_DEVICES and THRESHOLD, then grows
-# if PCT is still over it. Returns 1 if skipped while backing off, else 0.
+# attempt_grow PCT AVAIL_BYTES: folds stray volumes, refreshes NUM_DEVICES and THRESHOLD,
+# then grows if space_is_low still holds. Returns 1 if skipped while backing off, else 0.
 attempt_grow() {
     local pct="$1"
+    local avail_bytes="${2:-}"
     local now
     now=$(now_seconds)
     [ "$now" -ge "$NEXT_GROW_ATTEMPT" ] || return 1
@@ -301,15 +321,19 @@ attempt_grow() {
         NUM_DEVICES=$OWNED_ATTACHED_COUNT
         THRESHOLD=$(calc_threshold "$NUM_DEVICES")
         fold_stray_volumes "$OWNED_ATTACHED_IDS" || fold=$?
-        # A fold grew the filesystem, so PCT is stale until the next tick.
+        # A fold grew the filesystem, so PCT and AVAIL_BYTES are stale until the next tick.
         [ "$fold" -ne 0 ] || GROW_RETRY_DELAY=0
         if [ "$fold" -eq 2 ]; then
             status=1
-        elif [ "$fold" -eq 0 ] || [ "$pct" -lt "$THRESHOLD" ]; then
+        elif [ "$fold" -eq 0 ] || ! space_is_low "$avail_bytes" "$pct"; then
             RECONCILE_PENDING=0
             return 0
         else
-            loginfo "low disk (${pct}%)"
+            if [ "$MIN_FREE_SPACE" -gt 0 ]; then
+                loginfo "low disk ($(( avail_bytes / BYTES_PER_GB ))GB free)"
+            else
+                loginfo "low disk (${pct}%)"
+            fi
             add_space "$NUM_DEVICES" "$OWNED_CREATED_GB" || status=$?
         fi
     else
@@ -355,7 +379,7 @@ run_daemon() {
     done
 
     local log_count="$LOG_INTERVAL"
-    local stats pct usage
+    local stats pct avail_bytes usage trigger
     # Only the initial threshold depends on this; it is refreshed before any grow.
     usage=$(get_autoscaled_usage) || usage="0 0"
     NUM_DEVICES=${usage% *}
@@ -363,16 +387,23 @@ run_daemon() {
 
     while true; do
         stats=$(read_fs_stats "$MOUNTPOINT")
-        pct=$(printf '%s' "$stats" | awk '{print $4}')
+        read -r _ _ avail_bytes pct <<STATS_EOF
+$stats
+STATS_EOF
 
-        if [ "${pct:-0}" -ge "$THRESHOLD" ] || [ "$RECONCILE_PENDING" -eq 1 ]; then
-            if attempt_grow "${pct:-0}"; then
+        if space_is_low "$avail_bytes" "$pct" || [ "$RECONCILE_PENDING" -eq 1 ]; then
+            if attempt_grow "${pct:-0}" "$avail_bytes"; then
                 log_count="$LOG_INTERVAL"
             fi
         fi
 
         if [ "$log_count" -ge "$LOG_INTERVAL" ]; then
-            loginfo "devices=${NUM_DEVICES} stats_bytes=[${stats}] util=${pct}% threshold=${THRESHOLD}%"
+            if [ "$MIN_FREE_SPACE" -gt 0 ]; then
+                trigger="min_free=${MIN_FREE_SPACE}GB"
+            else
+                trigger="util=${pct}% threshold=${THRESHOLD}%"
+            fi
+            loginfo "devices=${NUM_DEVICES} stats_bytes=[${stats}] ${trigger}"
             log_count=0
         fi
         log_count=$(( log_count + 1 ))
@@ -390,6 +421,9 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
     MAX_LOGICAL_VOLUME_SIZE=$(get_config_value .limits.max_logical_volume_size)
     MAX_EBS_VOLUME_COUNT=$(get_config_value .limits.max_ebs_volume_count)
     INITIAL_UTILIZATION_THRESHOLD=$(get_config_value .limits.initial_utilization_threshold)
+    # A config rendered by an older install.sh has no such key, and jq prints null.
+    MIN_FREE_SPACE=$(get_config_value .limits.min_free_space)
+    case "$MIN_FREE_SPACE" in ''|null) MIN_FREE_SPACE=0 ;; esac
     FILE_SYSTEM=$(get_config_value .filesystem)
     LVM_VG=$(get_config_value .lvm.volume_group)
     LVM_LV=$(get_config_value .lvm.logical_volume)

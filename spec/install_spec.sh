@@ -45,6 +45,84 @@ Describe 'install.sh argument handling and config rendering'
     Assert valid_json "$(cat "$CFG")"
   End
 
+  Describe '--min-free-space'
+    It 'renders the given free-space floor'
+      When call run_install --min-free-space 500
+      The status should be success
+      The stderr should include 'rendered config'
+      The contents of file "$CFG" should include '"min_free_space": "500"'
+    End
+
+    It 'renders 0 (off) by default'
+      When call run_install
+      The status should be success
+      The stderr should include 'rendered config'
+      The contents of file "$CFG" should include '"min_free_space": "0"'
+    End
+
+    It 'keeps the default utilization threshold alongside it'
+      When call run_install --min-free-space 500
+      The status should be success
+      The stderr should include 'rendered config'
+      The contents of file "$CFG" should include '"initial_utilization_threshold": "50"'
+    End
+
+    It 'fails when combined with --initial-utilization-threshold'
+      When call run_install --initial-utilization-threshold 60 --min-free-space 500
+      The status should be failure
+      The stderr should include 'error:'
+      The stderr should include '--initial-utilization-threshold'
+      The stderr should include '--min-free-space'
+      The file "$CFG" should not be exist
+    End
+
+    It 'fails when combined with --initial-utilization-threshold in either order'
+      When call run_install --min-free-space 500 --initial-utilization-threshold 50
+      The status should be failure
+      The stderr should include 'error:'
+    End
+
+    It 'rejects 0'
+      When call run_install --min-free-space 0
+      The status should be failure
+      The stderr should include 'error:'
+    End
+
+    It 'rejects a non-numeric value'
+      When call run_install --min-free-space abc
+      The status should be failure
+      The stderr should include 'error:'
+      The file "$CFG" should not be exist
+    End
+
+    It 'rejects a negative value'
+      When call run_install --min-free-space -5
+      The status should be failure
+      The stderr should include 'error:'
+    End
+
+    It 'rejects a decimal value'
+      When call run_install --min-free-space 1.5
+      The status should be failure
+      The stderr should include 'error:'
+    End
+
+    It 'rejects an empty value'
+      When call run_install --min-free-space ''
+      The status should be failure
+      The stderr should include 'error:'
+    End
+
+  End
+
+  It 'still renders --initial-utilization-threshold on its own'
+    When call run_install --initial-utilization-threshold 70
+    The status should be success
+    The stderr should include 'rendered config'
+    The contents of file "$CFG" should include '"initial_utilization_threshold": "70"'
+    The contents of file "$CFG" should include '"min_free_space": "0"'
+  End
+
   It 'warns but succeeds on the deprecated --imdsv2 flag'
     When call run_install -m /scratch --imdsv2
     The status should be success
