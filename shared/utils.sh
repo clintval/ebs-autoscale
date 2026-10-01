@@ -128,7 +128,7 @@ read_owned_volumes() {
             and (.Attachments | type) == "array"
             and all(.Attachments[]; (.InstanceId | str) and (.State | str) and (.Device | str)))
         then . else error("unexpected describe-volumes response") end
-        | [.Volumes[] | select(.State | IN("deleting", "deleted", "error") | not)] as $volumes
+        | [.Volumes[] | select(.State | . != "deleting" and . != "deleted" and . != "error")] as $volumes
         | [$volumes[]
             | select(any(.Tags[]?; .Key == $tag))
             | select(any(.Attachments[]?; .InstanceId == $iid and .State == "attached"))
