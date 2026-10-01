@@ -291,6 +291,19 @@ THRESHOLD=0
 # Free-space floor in GB; 0 selects the utilization thresholds.
 MIN_FREE_SPACE=0
 
+# load_min_free_space: sets MIN_FREE_SPACE from the config or fails; a missing key reads as null and means off.
+load_min_free_space() {
+    MIN_FREE_SPACE=$(get_config_value .limits.min_free_space)
+    case "$MIN_FREE_SPACE" in
+        ''|null|0) MIN_FREE_SPACE=0; return 0 ;;
+        *[!0-9]*|0*) ;;
+        # 18 digits always fit in shell arithmetic.
+        *) [ "${#MIN_FREE_SPACE}" -gt 18 ] || return 0 ;;
+    esac
+    logerr "invalid min_free_space '${MIN_FREE_SPACE}' in ${EBS_AUTOSCALE_CONFIG_FILE}: expected a positive whole number of GB with no leading zero"
+    return 1
+}
+
 # Failed grows back off from 10 s, doubling to 5 min; a growth limit waits 5 min.
 GROW_RETRY_MIN_DELAY=10
 GROW_RETRY_MAX_DELAY=300
@@ -421,9 +434,7 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
     MAX_LOGICAL_VOLUME_SIZE=$(get_config_value .limits.max_logical_volume_size)
     MAX_EBS_VOLUME_COUNT=$(get_config_value .limits.max_ebs_volume_count)
     INITIAL_UTILIZATION_THRESHOLD=$(get_config_value .limits.initial_utilization_threshold)
-    # A config rendered by an older install.sh has no such key, and jq prints null.
-    MIN_FREE_SPACE=$(get_config_value .limits.min_free_space)
-    case "$MIN_FREE_SPACE" in ''|null) MIN_FREE_SPACE=0 ;; esac
+    load_min_free_space || exit 1
     FILE_SYSTEM=$(get_config_value .filesystem)
     LVM_VG=$(get_config_value .lvm.volume_group)
     LVM_LV=$(get_config_value .lvm.logical_volume)
