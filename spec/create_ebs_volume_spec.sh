@@ -185,6 +185,14 @@ Describe 'bin/create-ebs-volume volume creation'
       The value "$(awk 'END { print (NR < 15) ? "bounded" : "unbounded" }' "$POLLS")" should equal bounded
     End
 
+    It 'waits up to 600 seconds by default'
+      READY_ON_POLL=100000
+      When call wait_for_volume_available vol-0abc
+      The status should be failure
+      The stderr should include 'timed out'
+      The value "$(awk '{ t += $1 } END { print (t >= 600 && t < 606.25) ? "600 s" : t }' "$SLEEPS")" should equal "600 s"
+    End
+
     It 'polls once more after the last sleep before timing out'
       READY_ON_POLL=1000
       VOLUME_AVAILABLE_TIMEOUT=20

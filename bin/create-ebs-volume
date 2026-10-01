@@ -68,7 +68,7 @@ USAGE_EOF
 )
 
 # Seconds to wait for a new volume to become available.
-VOLUME_AVAILABLE_TIMEOUT=300
+VOLUME_AVAILABLE_TIMEOUT=600
 
 error() {
     logerr "$1"
