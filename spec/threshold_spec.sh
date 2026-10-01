@@ -111,6 +111,22 @@ Describe 'bin/ebs-autoscale scaling ladders'
       When call calc_new_size 11 7700
       The output should equal 300
     End
+    It 'covers a shortfall larger than the step'
+      When call calc_new_size 1 0 700
+      The output should equal 700
+    End
+    It 'keeps the step when the shortfall is smaller'
+      When call calc_new_size 5 0 200
+      The output should equal 300
+    End
+    It 'caps a shortfall at the max volume size'
+      When call calc_new_size 1 0 5000
+      The output should equal 1500
+    End
+    It 'caps a shortfall at what is left under the max total size'
+      When call calc_new_size 1 7500 700
+      The output should equal 500
+    End
     It 'does not turn a non-numeric size into the whole remaining budget'
       MAX_EBS_VOLUME_SIZE=null
       When call calc_new_size 11 300

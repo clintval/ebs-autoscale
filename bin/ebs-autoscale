@@ -78,10 +78,11 @@ space_is_low() {
     fi
 }
 
-# calc_new_size NUM_DEVICES AUTOSCALED_GB -> next volume's GB by device count, capped at the room left.
+# calc_new_size NUM_DEVICES AUTOSCALED_GB [SHORTFALL_GB] -> GB by device count, or the shortfall if larger, capped at the room left.
 calc_new_size() {
     local num_devices="$1"
     local autoscaled_gb="$2"
+    local shortfall_gb="${3:-0}"
     local room_gb=$(( MAX_LOGICAL_VOLUME_SIZE - autoscaled_gb ))
     local new_size="$MIN_EBS_VOLUME_SIZE"
     if [ "$num_devices" -ge 4 ] && [ "$num_devices" -le 6 ]; then
@@ -102,6 +103,10 @@ calc_new_size() {
         fi
     elif [ "$num_devices" -gt 10 ]; then
         new_size="$MAX_EBS_VOLUME_SIZE"
+    fi
+    if [ "$shortfall_gb" -gt 0 ] && [ "$shortfall_gb" -gt "$new_size" ]; then
+        new_size="$shortfall_gb"
+        [ "$new_size" -le "$MAX_EBS_VOLUME_SIZE" ] || new_size="$MAX_EBS_VOLUME_SIZE"
     fi
     [ "$room_gb" -lt "$new_size" ] && new_size="$room_gb"
     echo "$new_size"
@@ -248,10 +253,11 @@ fold_stray_volumes() {
     return "$folded"
 }
 
-# add_space NUM_DEVICES AUTOSCALED_GB -> 0 grown, 2 at a growth limit, 1 failed.
+# add_space NUM_DEVICES AUTOSCALED_GB [SHORTFALL_GB] -> 0 grown, 2 at a growth limit, 1 failed.
 add_space() {
     local num_devices="$1"
     local autoscaled_gb="$2"
+    local shortfall_gb="${3:-0}"
     if ! can_grow "$num_devices" "$autoscaled_gb"; then
         local limits="devices=${num_devices}/${MAX_EBS_VOLUME_COUNT} autoscaled=${autoscaled_gb}/${MAX_LOGICAL_VOLUME_SIZE}GB"
         [ $(( autoscaled_gb + MIN_EBS_VOLUME_SIZE )) -le "$MAX_LOGICAL_VOLUME_SIZE" ] || limits="${limits} min=${MIN_EBS_VOLUME_SIZE}GB"
@@ -260,7 +266,7 @@ add_space() {
     fi
     local vol_size device
     local status=0
-    vol_size=$(calc_new_size "$num_devices" "$autoscaled_gb")
+    vol_size=$(calc_new_size "$num_devices" "$autoscaled_gb" "$shortfall_gb")
     loginfo "extending ${MOUNTPOINT} by ${vol_size}GB"
     device=$("$CREATE_VOLUME" --size "$vol_size" \
         --max-total-created-size "$MAX_LOGICAL_VOLUME_SIZE" \
@@ -329,7 +335,7 @@ attempt_grow() {
     now=$(now_seconds)
     [ "$now" -ge "$NEXT_GROW_ATTEMPT" ] || return 1
 
-    local status=0 fold=0
+    local status=0 fold=0 shortfall_gb=0
     if read_owned_volumes; then
         NUM_DEVICES=$OWNED_ATTACHED_COUNT
         THRESHOLD=$(calc_threshold "$NUM_DEVICES")
@@ -344,10 +350,11 @@ attempt_grow() {
         else
             if [ "$MIN_FREE_SPACE" -gt 0 ]; then
                 loginfo "low disk ($(( avail_bytes / BYTES_PER_GB ))GB free)"
+                shortfall_gb=$(( MIN_FREE_SPACE - avail_bytes / BYTES_PER_GB ))
             else
                 loginfo "low disk (${pct}%)"
             fi
-            add_space "$NUM_DEVICES" "$OWNED_CREATED_GB" || status=$?
+            add_space "$NUM_DEVICES" "$OWNED_CREATED_GB" "$shortfall_gb" || status=$?
         fi
     else
         logerr "could not query EC2 for this instance's volumes"

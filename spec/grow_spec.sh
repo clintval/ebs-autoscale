@@ -341,6 +341,51 @@ Describe 'bin/ebs-autoscale growth attempts'
       The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'low disk (10%)'
     End
 
+    Describe 'sizing the next volume'
+      record_create_args() {
+        MAX_LOGICAL_VOLUME_SIZE=8000
+        # shellcheck disable=SC2016
+        printf '#!/bin/sh\necho "$*" >> "$CREATES"\ncat "$CREATE_OUTPUT"\n' > "$CREATE_VOLUME"
+      }
+      Before 'record_create_args'
+      requested_sizes() { sed -n 's/.*--size \([0-9]*\).*/\1/p' "$CREATES"; }
+
+      It 'covers the shortfall in one grow rather than the ladder size'
+        MIN_FREE_SPACE=1000; set_volumes 1 300
+        When call attempt_grow 1 $(( 300 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 700
+      End
+
+      It 'uses the ladder size when the shortfall is smaller'
+        MIN_FREE_SPACE=1000
+        When call attempt_grow 10 $(( 950 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 150
+      End
+
+      It 'caps the shortfall at the max volume size'
+        MIN_FREE_SPACE=5000
+        When call attempt_grow 1 $(( 300 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 1500
+      End
+
+      It 'caps the shortfall at the room left under the max total size'
+        MIN_FREE_SPACE=1000; set_volumes 1 7500
+        When call attempt_grow 1 $(( 300 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 500
+      End
+
+      It 'keeps the ladder size in percentage mode'
+        MIN_FREE_SPACE=0
+        When call attempt_grow 95 $(( 1 * BYTES_PER_GB ))
+        The status should be success
+        The result of function requested_sizes should equal 150
+      End
+    End
+
     It 'backs off after a failed grow like the percentage mode'
       create_errors
       attempt_grow 10 $(( 50 * GB )) 2>/dev/null
