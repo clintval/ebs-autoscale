@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Globals below are consumed by the Included script and stubs are invoked
 # indirectly by shellspec; shellcheck cannot follow the Include DSL.
-# shellcheck disable=SC2034,SC2317
+# shellcheck disable=SC2034,SC2317,SC2329
 Describe 'bin/create-ebs-volume NVMe device resolution'
   Include bin/create-ebs-volume
 
