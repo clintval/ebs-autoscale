@@ -49,6 +49,7 @@ Describe 'bin/ebs-autoscale growth attempts'
   # shellcheck disable=SC2016
   create_exits() { printf '#!/bin/sh\necho create >> "$CREATES"\ncat "$CREATE_OUTPUT"\nexit %s\n' "$1" > "$CREATE_VOLUME"; }
   create_at_limit() { create_fails; create_exits 3; }
+  create_errors() { create_fails; create_exits 1; }
   create_count() { wc -l < "$CREATES" | tr -d ' '; }
   aws_call_count() { wc -l < "$CALLS" | tr -d ' '; }
 
@@ -121,6 +122,24 @@ Describe 'bin/ebs-autoscale growth attempts'
       NOW=1300
       When call attempt_grow 95
       The status should be success
+      The value "$(create_count)" should equal 2
+    End
+  End
+
+  Describe 'when create-ebs-volume exits 1'
+    It 'reports a failure rather than a growth limit'
+      create_errors
+      When call add_space 1 100
+      The status should equal 1
+      The stderr should include 'failed to create or attach a volume (status 1)'
+    End
+
+    It 'takes the failure backoff'
+      create_errors
+      attempt_grow 95 2>/dev/null
+      NOW=1010
+      When call attempt_grow 95
+      The stderr should include 'growing failed; next attempt in 20s'
       The value "$(create_count)" should equal 2
     End
   End

@@ -83,7 +83,7 @@ Describe 'bin/create-ebs-volume volume creation'
     It 'deletes the volume when it enters the error state'
       VOLUME_STATE=error
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The contents of file "$CALLS" should include 'delete-volume'
       The stderr should include 'did not become available'
     End
@@ -92,7 +92,7 @@ Describe 'bin/create-ebs-volume volume creation'
       VOLUME_STATE=creating
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The contents of file "$CALLS" should include 'delete-volume'
     End
@@ -102,7 +102,7 @@ Describe 'bin/create-ebs-volume volume creation'
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
       DELETE_RC=1
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The stderr should include 'could not be deleted'
       The stderr should include 'IncorrectState'
       The stderr should not include 'deleted it'
@@ -217,7 +217,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=2
       FINAL_STATE=error
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'state error'
       The contents of file "$POLLS" should eq "$(printf 'poll\npoll')"
     End
@@ -225,14 +225,14 @@ Describe 'bin/create-ebs-volume volume creation'
     It 'fails immediately when the volume is being deleted'
       FINAL_STATE=deleting
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'state deleting'
     End
 
     It 'fails immediately when the volume has been deleted'
       FINAL_STATE=deleted
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'state deleted'
     End
 
@@ -243,7 +243,7 @@ Describe 'bin/create-ebs-volume volume creation'
         return 254
       }
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'could not describe volume vol-0abc'
       The contents of file "$POLLS" should equal poll
       The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'UnauthorizedOperation'
@@ -263,7 +263,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=1000
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The value "$(awk 'END { print (NR < 15) ? "bounded" : "unbounded" }' "$POLLS")" should equal bounded
     End
@@ -271,7 +271,7 @@ Describe 'bin/create-ebs-volume volume creation'
     It 'waits up to 600 seconds by default'
       READY_ON_POLL=100000
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The value "$(awk '{ t += $1 } END { print (t >= 600 && t < 606.25) ? "600 s" : t }' "$SLEEPS")" should equal "600 s"
     End
@@ -280,7 +280,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=1000
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The value "$(( $(wc -l < "$POLLS") - $(wc -l < "$SLEEPS") ))" should equal 1
     End
@@ -289,7 +289,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=1000
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The contents of file "$POLLS" should equal poll
       The contents of file "$SLEEPS" should equal ""
