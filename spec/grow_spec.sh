@@ -116,6 +116,15 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'when the log cannot be written'
+    It 'still reports a successful grow'
+      EBS_AUTOSCALE_LOG_FILE=/nonexistent/ebs-autoscale.log
+      When call add_space 1 100
+      The status should be success
+      The stderr should be present
+    End
+  End
+
   Describe 'when EC2 cannot be queried'
     It 'backs off without creating a volume'
       aws() { printf '%s\n' "$*" >> "$CALLS"; return 1; }

@@ -185,10 +185,10 @@ add_space() {
     fi
     if grow_filesystem "$device"; then
         loginfo "finished extending ${MOUNTPOINT}"
-    else
-        logerr "failed to extend the filesystem onto ${device}"
-        return 1
+        return 0
     fi
+    logerr "failed to extend the filesystem onto ${device}"
+    return 1
 }
 
 # Daemon state: the attached autoscaled volume count and the utilization
