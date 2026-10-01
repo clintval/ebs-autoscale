@@ -132,6 +132,7 @@ The installer accepts the following options:
     --not-encrypted                    Create unencrypted volumes
 ```
 
+When install creates the initial volume, it counts toward `--max-total-created-size`, and install fails if `--initial-size` exceeds it.
 The runtime config is written to `/etc/ebs-autoscale.json`; override the path with `EBS_AUTOSCALE_CONFIG_FILE`.
 Set `EBS_AUTOSCALE_RENDER_ONLY=1` to render the config and exit without installing, which is useful for review.
 The mount point is created world-writable with the sticky bit (`chmod 1777`), so any user may create files there but only remove their own, matching how a shared scratch area is used.
