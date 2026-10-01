@@ -5,8 +5,9 @@
 # this repository (shipped to the instance through a throwaway S3 object), fills
 # /scratch past its utilization threshold, and asserts that the filesystem grew
 # and a second EBS volume was attached. It then stops the daemon, attaches a
-# tagged volume outside the volume group, restarts the daemon, and asserts the
-# volume is folded in without another being created. It then sets a
+# tagged volume outside the volume group, clears its DeleteOnTermination,
+# restarts the daemon, and asserts the volume is folded in and its
+# DeleteOnTermination repaired without another being created. It then sets a
 # min_free_space floor over the free space at low utilization and asserts one
 # volume, padded 8% over the shortfall, lifts free space over it while ext4 keeps
 # part of it, so an exact-shortfall volume would fall short. Finally it terminates the
@@ -158,6 +159,15 @@ owned_volumes() {
     --query 'Volumes[].[VolumeId,Size]' --output text
 }
 
+# Prints how many attachments of the volumes this instance created lack DeleteOnTermination, or "error".
+missing_dot_count() {
+  # The backticks are JMESPath literals, not shell expansions.
+  # shellcheck disable=SC2016
+  aws ec2 describe-volumes --region "$REGION" \
+    --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
+    --query 'length(Volumes[].Attachments[?DeleteOnTermination != `true`][])' --output text 2>/dev/null || echo error
+}
+
 # Prints the last non-empty line of an ssm_run command's output.
 ssm_last() {
   ssm_run "$1" | awk 'NF { last = $0 } END { print last }'
@@ -292,12 +302,33 @@ pv_vg() {
 
 log "stopping the daemon and attaching a volume outside the volume group"
 ssm_run 'systemctl stop ebs-autoscale' >/dev/null
+pre_stray_ids="$(owned_volumes | awk '{ printf "%s ", $1 }')" || die "could not list the owned volumes"
 stray_dev="$(ssm_run "/usr/local/ebs-autoscale/bin/create-ebs-volume --size ${INITIAL_GB}" | awk 'NF { last = $0 } END { print last }')"
 [[ "$stray_dev" == /dev/nvme* ]] || die "could not attach a stray volume (got '${stray_dev}')"
 [[ "$(pv_vg "$stray_dev")" == "vg=[]" ]] || die "${stray_dev} joined a volume group before the daemon restarted"
 stray_count="$(owned_volume_count)"
 stray_size="$(ssm_run 'df -B1 --output=size /scratch | tail -n1 | tr -d " "')"
 log "stray ${stray_dev} attached: owned volumes=${stray_count}, /scratch size=${stray_size}B"
+
+stray_vol="$(owned_volumes | awk -v before="$pre_stray_ids" \
+  'BEGIN { n = split(before, ids); for (i = 1; i <= n; i++) seen[ids[i]] = 1 } NF && !($1 in seen) { print $1 }')" \
+  || die "could not list the owned volumes"
+[[ "$stray_vol" =~ ^vol-[0-9a-f]+$ ]] || die "expected one new owned volume for ${stray_dev}, got '${stray_vol}'"
+stray_bdm="$(aws ec2 describe-volumes --region "$REGION" --volume-ids "$stray_vol" \
+  --query 'Volumes[0].Attachments[0].Device' --output text 2>/dev/null || echo error)"
+[[ "$stray_bdm" == /dev/* ]] || die "could not read the device ${stray_vol} is attached as (got '${stray_bdm}')"
+log "clearing DeleteOnTermination on ${stray_vol} (${stray_bdm}) so the restart must repair it"
+aws ec2 modify-instance-attribute --region "$REGION" --instance-id "$INSTANCE_ID" \
+  --block-device-mappings "DeviceName=${stray_bdm},Ebs={DeleteOnTermination=false}" >/dev/null \
+  || die "could not clear DeleteOnTermination on ${stray_vol}"
+cleared=""
+for ((i = 0; i < 12; i++)); do
+  [[ "$(missing_dot_count)" == "1" ]] && { cleared=1; break; }
+  sleep 5
+done
+[[ -n "$cleared" ]] || die "EC2 never reported DeleteOnTermination cleared on ${stray_vol} alone (got '$(missing_dot_count)')"
+repairs_before="$(ssm_last "grep -c 'enabled DeleteOnTermination on ${stray_vol}' /var/log/ebs-autoscale.log || true")"
+[[ "$repairs_before" =~ ^[0-9]+$ ]] || die "could not read /var/log/ebs-autoscale.log (got '${repairs_before}')"
 
 log "restarting the daemon and waiting for it to fold ${stray_dev} into ${VG}"
 ssm_run 'systemctl start ebs-autoscale' >/dev/null
@@ -310,6 +341,16 @@ done
 [[ -n "$folded" ]] || die "the daemon did not fold ${stray_dev} into ${VG} and grow /scratch"
 fold_logs="$(ssm_run "grep -c 'folding stray volume' /var/log/ebs-autoscale.log || true")"
 [[ "$fold_logs" -ge 1 ]] || die "the daemon did not log the fold"
+repaired=""
+for ((i = 0; i < 12; i++)); do
+  [[ "$(missing_dot_count)" == "0" ]] && { repaired=1; break; }
+  sleep 5
+done
+[[ -n "$repaired" ]] || die "DeleteOnTermination is still not enabled on $(missing_dot_count) owned volume attachment(s) after the restart"
+repairs_after="$(ssm_last "grep -c 'enabled DeleteOnTermination on ${stray_vol}' /var/log/ebs-autoscale.log || true")"
+[[ "$repairs_after" =~ ^[0-9]+$ && "$repairs_after" -gt "$repairs_before" ]] \
+  || die "the daemon did not log enabling DeleteOnTermination on ${stray_vol} (got '${repairs_after}', was '${repairs_before}')"
+log "repaired DeleteOnTermination on ${stray_vol}"
 log "folded: /scratch size=${folded}B; waiting to confirm no extra volume is created"
 sleep 20
 [[ "$(owned_volume_count)" -eq "$stray_count" ]] || die "expected ${stray_count} owned volumes after the fold, got $(owned_volume_count)"
@@ -376,4 +417,4 @@ leaked="$(aws ec2 describe-volumes --region "$REGION" \
 TERMINATED=1  # already terminated; keep cleanup from re-terminating
 [[ "$leaked" == "0" ]] || die "$leaked autoscale volume(s) leaked after termination"
 
-log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), folded a stray volume on restart, grew ${new_gb} GB to clear a ${floor_gb} GB floor, no leaks"
+log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), folded and repaired a stray volume on restart, grew ${new_gb} GB to clear a ${floor_gb} GB floor, no leaks"
