@@ -67,9 +67,6 @@ Options
 USAGE_EOF
 )
 
-# Seconds to wait for a new volume to become available.
-VOLUME_AVAILABLE_TIMEOUT=600
-
 error() {
     logerr "$1"
     exit 1
@@ -192,12 +189,12 @@ jittered_ms() {
 # whose fixed 15 s poll interval dominated grow latency, and still cheap: a
 # typical volume is ready within two or three polls. Returns 1 immediately if
 # the volume is in state "error", "deleting" or "deleted", or once
-# VOLUME_AVAILABLE_TIMEOUT elapses. The timeout counts the planned sleeps, so
+# EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT (default 600) elapses. The timeout counts the planned sleeps, so
 # slow describe calls stretch it, and the fractional sleep relies on GNU sleep
 # (Amazon Linux 2023).
 wait_for_volume_available() {
     local volume_id="$1"
-    local timeout_ms=$(( VOLUME_AVAILABLE_TIMEOUT * 1000 ))
+    local timeout_ms=$(( ${EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT:-600} * 1000 ))
     local base_ms=1000
     local max_ms=5000
     local elapsed_ms=0

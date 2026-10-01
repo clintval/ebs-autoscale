@@ -170,7 +170,7 @@ Describe 'bin/create-ebs-volume volume creation'
 
     It 'fails once the timeout elapses'
       READY_ON_POLL=1000
-      VOLUME_AVAILABLE_TIMEOUT=20
+      EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
       When call wait_for_volume_available vol-0abc
       The status should be failure
       The stderr should include 'timed out'
@@ -178,7 +178,7 @@ Describe 'bin/create-ebs-volume volume creation'
 
     It 'stops polling soon after the timeout rather than continuing forever'
       READY_ON_POLL=1000
-      VOLUME_AVAILABLE_TIMEOUT=20
+      EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
       When call wait_for_volume_available vol-0abc
       The status should be failure
       The stderr should include 'timed out'
@@ -195,7 +195,7 @@ Describe 'bin/create-ebs-volume volume creation'
 
     It 'polls once more after the last sleep before timing out'
       READY_ON_POLL=1000
-      VOLUME_AVAILABLE_TIMEOUT=20
+      EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
       When call wait_for_volume_available vol-0abc
       The status should be failure
       The stderr should include 'timed out'
@@ -204,7 +204,7 @@ Describe 'bin/create-ebs-volume volume creation'
 
     It 'polls once before timing out when the timeout is zero'
       READY_ON_POLL=1000
-      VOLUME_AVAILABLE_TIMEOUT=0
+      EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
       When call wait_for_volume_available vol-0abc
       The status should be failure
       The stderr should include 'timed out'
@@ -227,7 +227,6 @@ Describe 'bin/create-ebs-volume volume creation'
 
     It 'never sleeps longer than the 5 second cap'
       READY_ON_POLL=40
-      VOLUME_AVAILABLE_TIMEOUT=600
       When call wait_for_volume_available vol-0abc
       The value "$(awk '$1 > 5 { n++ } END { print n + 0 }' "$SLEEPS")" should equal 0
     End
