@@ -53,6 +53,15 @@ Describe 'shared/utils.sh read_owned_volumes'
     The output should equal '1|2|20|vol-0a1b2c3d4e5f60718|/dev/sdf'
   End
 
+  It 'ignores volumes that are deleting, deleted or in error'
+    RESPONSE=$(printf '%s' "$RESPONSE" | jq -c '.Volumes += [
+      {VolumeId: "vol-0d1", Size: 100, State: "deleting", Attachments: []},
+      {VolumeId: "vol-0d2", Size: 200, State: "deleted", Attachments: []},
+      {VolumeId: "vol-0d3", Size: 300, State: "error", Attachments: []}]')
+    When call summary
+    The output should equal '2|2|20|vol-0a1b2c3d4e5f60718 vol-0b2c3d4e5f6071829|/dev/sdf /dev/sdg'
+  End
+
   It 'reports zero when there are no volumes'
     RESPONSE='{"Volumes":[]}'
     When call summary

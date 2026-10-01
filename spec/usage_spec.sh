@@ -62,6 +62,12 @@ Describe 'bin/ebs-autoscale get_autoscaled_usage'
     The output should equal '0 100'
   End
 
+  It 'ignores a deleting volume in the count and the size'
+    RESPONSE=$(volumes "$(volume 100 i-0123)" "$(volume 200 '' | jq -c '.State = "deleting"')")
+    When call get_autoscaled_usage
+    The output should equal '1 100'
+  End
+
   It 'does not count a volume whose attachment is detaching'
     RESPONSE=$(volumes "$(volume 100 i-0123)" "$(volume 200 i-0123 detaching)")
     When call get_autoscaled_usage

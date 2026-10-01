@@ -110,8 +110,9 @@ logthis() {
 # autoscaled volume from one attached for other reasons.
 CREATION_TAG=amazon-ebs-autoscale-creation-time
 
-# read_owned_volumes: one describe-volumes for this instance's volumes; sets OWNED_ATTACHED_COUNT,
-# OWNED_ATTACHED_IDS, OWNED_CREATED_COUNT, OWNED_CREATED_GB and OWNED_CLAIMED_DEVICES, or fails.
+# read_owned_volumes: one describe-volumes for this instance's volumes, ignoring deleting, deleted and
+# errored ones; sets OWNED_ATTACHED_COUNT, OWNED_ATTACHED_IDS, OWNED_CREATED_COUNT, OWNED_CREATED_GB
+# and OWNED_CLAIMED_DEVICES, or fails.
 # shellcheck disable=SC2034
 read_owned_volumes() {
     local response summary
@@ -121,7 +122,7 @@ read_owned_volumes() {
         --output json 2>/dev/null) || return 1
     [ -n "$response" ] || return 1
     summary=$(printf '%s' "$response" | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" '
-        .Volumes as $volumes
+        [.Volumes[] | select(.State | IN("deleting", "deleted", "error") | not)] as $volumes
         | [$volumes[]
             | select(any(.Tags[]?; .Key == $tag))
             | select(any(.Attachments[]?; .InstanceId == $iid and .State == "attached"))
