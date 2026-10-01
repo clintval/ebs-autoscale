@@ -168,10 +168,18 @@ grow_filesystem() {
     esac
 }
 
+# lvm_report CMD [ARG...]: run an LVM report command under the lvresize timeout, logging failures.
+lvm_report() {
+    local status=0
+    timeout -k 6 60 "$@" 2>>"$EBS_AUTOSCALE_LOG_FILE" || status=$?
+    [ "$status" -eq 0 ] || logerr "$1 failed (status ${status})"
+    return "$status"
+}
+
 # vg_members -> the VG's physical volumes as device paths; pvs reports EC2's /dev/sdX aliases.
 vg_members() {
     local report pv
-    report=$(pvs --noheadings -o pv_name,vg_name) || return 1
+    report=$(lvm_report pvs --noheadings -o pv_name,vg_name) || return 1
     for pv in $(printf '%s\n' "$report" | awk -v vg="$LVM_VG" '$2 == vg { print $1 }'); do
         readlink -f "$pv"
     done

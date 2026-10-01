@@ -31,6 +31,7 @@ Describe 'bin/ebs-autoscale growth attempts'
     grow_filesystem() { return "$GROW_RC"; }
     _nvme_candidates() { :; }
     pvs() { :; }
+    timeout() { shift 3; "$@"; }
     # Serves describe-volumes from VOLUMES_JSON and records each call.
     aws() {
       printf '%s\n' "$*" >> "$CALLS"
@@ -429,6 +430,23 @@ Describe 'bin/ebs-autoscale growth attempts'
       pvs() { echo '  lvm error' >&2; return 5; }
       When call attempt_grow 95
       The stderr should include 'growing failed'
+      The value "$(create_count)" should equal 0
+    End
+
+    It 'logs why pvs failed'
+      pvs() { echo '  Volume group "autoscale_vg" lock timed out' >&2; return 5; }
+      When call attempt_grow 95
+      The stderr should include 'pvs failed (status 5)'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'lock timed out'
+    End
+
+    It 'gives up on pvs after the LVM timeout'
+      TIMEOUTS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.timeouts"
+      : > "$TIMEOUTS"
+      timeout() { echo "$*" >> "$TIMEOUTS"; return 124; }
+      When call attempt_grow 95
+      The stderr should include 'pvs failed (status 124)'
+      The contents of file "$TIMEOUTS" should equal '-k 6 60 pvs --noheadings -o pv_name,vg_name'
       The value "$(create_count)" should equal 0
     End
 
