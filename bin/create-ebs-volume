@@ -202,7 +202,7 @@ wait_for_volume_available() {
     local max_ms=5000
     local elapsed_ms=0
     local sleep_ms state
-    while [ "$elapsed_ms" -lt "$timeout_ms" ]; do
+    while :; do
         state=$(aws ec2 describe-volumes \
             --region "$AWS_REGION" \
             --volume-ids "$volume_id" \
@@ -215,6 +215,7 @@ wait_for_volume_available() {
                 return 1
                 ;;
         esac
+        [ "$elapsed_ms" -lt "$timeout_ms" ] || break
         sleep_ms=$(jittered_ms "$base_ms")
         [ "$sleep_ms" -le "$max_ms" ] || sleep_ms=$max_ms
         sleep "$(printf '%d.%03d' $(( sleep_ms / 1000 )) $(( sleep_ms % 1000 )))"
