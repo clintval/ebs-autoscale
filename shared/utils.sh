@@ -193,6 +193,36 @@ retry() {
     done
 }
 
+# enable_delete_on_termination BDM_DEVICE VOLUME_ID: up to 5 attempts with retry's backoff, only 1 on an authorization error.
+enable_delete_on_termination() {
+    local bdm_device="$1"
+    local volume_id="$2"
+    local i=1
+    local err status
+    while :; do
+        err=$(aws ec2 modify-instance-attribute \
+            --region "$AWS_REGION" \
+            --instance-id "$INSTANCE_ID" \
+            --block-device-mappings "DeviceName=${bdm_device},Ebs={DeleteOnTermination=true,VolumeId=${volume_id}}" 2>&1 >/dev/null) && break
+        status=$?
+        err=$(printf '%s' "$err" | tr '\n' ' ')
+        case "$err" in
+            *'(UnauthorizedOperation)'*|*'(AuthFailure)'*|*'(AccessDenied)'*)
+                logerr "volume ${volume_id} DeleteOnTermination NOT enabled, so it may outlive the instance; not retrying an authorization error (grant ec2:ModifyInstanceAttribute): ${err}"
+                return 1
+                ;;
+        esac
+        if [ "$i" -ge 5 ]; then
+            logerr "volume ${volume_id} DeleteOnTermination NOT enabled after retries; it may outlive the instance: ${err}"
+            return 1
+        fi
+        logerr "modify-instance-attribute failed (status ${status}), attempt ${i}/5 for ${volume_id}: ${err}"
+        sleep $(( i * 2 ))
+        i=$(( i + 1 ))
+    done
+    loginfo "volume ${volume_id} DeleteOnTermination enabled"
+}
+
 starting() {
     loginfo "starting ebs-autoscale"
 }

@@ -274,15 +274,8 @@ create_and_attach_volume() {
         error "could not attach volume ${volume_id}; deleted it"
     fi
 
-    # Keyed by BDM name and set before the device lookup so an unresolved volume cannot outlive the instance.
-    if retry 5 aws ec2 modify-instance-attribute \
-        --region "$region" \
-        --instance-id "$instance_id" \
-        --block-device-mappings "DeviceName=${bdm_device},Ebs={DeleteOnTermination=true,VolumeId=${volume_id}}" >/dev/null; then
-        loginfo "volume ${volume_id} DeleteOnTermination enabled"
-    else
-        logerr "volume ${volume_id} DeleteOnTermination NOT enabled after retries; it may outlive the instance"
-    fi
+    # Keyed by BDM name and set before the device lookup so an unresolved volume cannot outlive the instance; a failure is logged, not fatal.
+    enable_delete_on_termination "$bdm_device" "$volume_id"
 
     # Resolve the real NVMe path for callers; the BDM name above is only what the
     # EC2 API understands, not necessarily a device that exists on the instance.
