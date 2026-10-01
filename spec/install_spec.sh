@@ -113,6 +113,34 @@ Describe 'install.sh argument handling and config rendering'
       The stderr should include 'error:'
     End
 
+    It 'rejects a floor over the max total created size'
+      When call run_install --min-free-space 107374182400
+      The status should be failure
+      The stderr should include 'error: --min-free-space must be less than --max-total-created-size'
+      The file "$CFG" should not be exist
+    End
+
+    It 'rejects a floor equal to the max total created size'
+      When call run_install --max-total-created-size 1000 --min-free-space 1000
+      The status should be failure
+      The stderr should include 'error: --min-free-space must be less than --max-total-created-size'
+      The file "$CFG" should not be exist
+    End
+
+    It 'rejects a floor too long for shell arithmetic'
+      When call run_install --min-free-space 99999999999999999999999
+      The status should be failure
+      The stderr should include 'error: --min-free-space must be less than --max-total-created-size'
+      The file "$CFG" should not be exist
+    End
+
+    It 'accepts a floor just under the max total created size'
+      When call run_install --max-total-created-size 1000 --min-free-space 999
+      The status should be success
+      The stderr should include 'rendered config'
+      The contents of file "$CFG" should include '"min_free_space": "999"'
+    End
+
   End
 
   It 'still renders --initial-utilization-threshold on its own'

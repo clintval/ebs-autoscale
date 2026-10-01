@@ -137,6 +137,11 @@ if [ "$MIN_FREE_SPACE_GIVEN" -eq 1 ]; then
             echo "error: --min-free-space must be a positive integer number of GB, got '${MIN_FREE_SPACE}'." >&2
             exit 1 ;;
     esac
+    # Free space never exceeds the created total, so a floor at or over it would grow until the budget is spent.
+    if ! [ "$MIN_FREE_SPACE" -lt "$MAX_LOGICAL_VOLUME_SIZE" ] 2>/dev/null; then
+        echo "error: --min-free-space must be less than --max-total-created-size (${MAX_LOGICAL_VOLUME_SIZE} GB), got '${MIN_FREE_SPACE}'." >&2
+        exit 1
+    fi
 fi
 
 # Strip a trailing slash so downstream mountpoint comparisons are stable.

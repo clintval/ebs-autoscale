@@ -325,13 +325,6 @@ Describe 'bin/ebs-autoscale growth attempts'
       The value "$(create_count)" should equal 1
     End
 
-    It 'grows for a floor too large to express in bytes'
-      MIN_FREE_SPACE=107374182400
-      When call attempt_grow 10 $(( 50 * GB ))
-      The status should be success
-      The value "$(create_count)" should equal 1
-    End
-
     It 'does not apply the raised threshold of a high device count'
       set_volumes 5 100
       When call attempt_grow 60 $(( 50 * GB ))
