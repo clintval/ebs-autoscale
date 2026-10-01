@@ -30,6 +30,7 @@ Describe 'bin/create-ebs-volume volume creation'
       SIZE=100; TYPE=gp3; IOPS=3000; THROUGHPUT=125; ENCRYPTED=1
       MAX_LOGICAL_VOLUME_SIZE=8000; MAX_ATTACHED_VOLUMES=16; MAX_CREATED_VOLUMES=16
       INSTANCE_ID=i-0123; AWS_AZ=us-west-2a; AWS_REGION=us-west-2
+      OWNED_VOLUMES='{"Volumes":[]}'
       CALLS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.aws-calls"
       : > "$CALLS"
       export CALLS
@@ -43,7 +44,7 @@ Describe 'bin/create-ebs-volume volume creation'
         case "$*" in
           *describe-tags*)               echo '{"Tags":[]}' ;;
           *describe-volumes*--volume-ids*) echo "${VOLUME_STATE:-available}" ;;
-          *describe-volumes*)            echo '{"Volumes":[]}' ;;
+          *describe-volumes*)            echo "$OWNED_VOLUMES" ;;
           *create-volume*)               echo '{"VolumeId":"vol-0abc"}' ;;
           *attach-volume*)               return "${ATTACH_RC:-0}" ;;
           *modify-instance-attribute*)   return "${MODIFY_RC:-0}" ;;
@@ -66,6 +67,23 @@ Describe 'bin/create-ebs-volume volume creation'
       The status should be success
       The output should equal /dev/nvme1n1
       The contents of file "$CALLS" should include 'DeviceName=/dev/sdf'
+    End
+
+    It 'refuses a volume that would take the total created size past the max'
+      OWNED_VOLUMES='{"Volumes":[{"Size":7900}]}'
+      SIZE=1500
+      When run create_and_attach_volume
+      The status should be failure
+      The stderr should include 'would exceed the maximum total EBS volume size'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'creates a volume that brings the total created size exactly to the max'
+      OWNED_VOLUMES='{"Volumes":[{"Size":6500}]}'
+      SIZE=1500
+      When run create_and_attach_volume
+      The status should be success
+      The output should equal /dev/nvme1n1
     End
 
     # A failed DeleteOnTermination is logged loudly but must not abort the attach.

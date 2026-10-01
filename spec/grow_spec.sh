@@ -144,6 +144,42 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'near the maximum total size'
+    record_create_args() {
+      MAX_EBS_VOLUME_COUNT=16; MAX_LOGICAL_VOLUME_SIZE=8000
+      # shellcheck disable=SC2016
+      printf '#!/bin/sh\necho "$*" >> "$CREATES"\ncat "$CREATE_OUTPUT"\n' > "$CREATE_VOLUME"
+    }
+    Before 'record_create_args'
+    requested_sizes() { sed -n 's/.*--size \([0-9]*\).*/\1/p' "$CREATES"; }
+
+    # With 11 devices the next step is 1500 GB.
+    Describe 'with room for at least the minimum volume size'
+      Parameters
+        6500 1500
+        7700 300
+        7850 150
+      End
+      Example "requests ${2} GB at ${1} of 8000 GB"
+        When call add_space 11 "$1"
+        The status should be success
+        The result of function requested_sizes should equal "$2"
+      End
+    End
+
+    Describe 'with less than the minimum volume size left'
+      Parameters
+        7851
+        7900
+      End
+      Example "stops at a growth limit at ${1} of 8000 GB"
+        When call add_space 11 "$1"
+        The status should equal 2
+        The value "$(create_count)" should equal 0
+      End
+    End
+  End
+
   Describe 'after a successful grow'
     It 'advances the device count and threshold'
       set_volumes 3 100

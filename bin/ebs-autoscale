@@ -76,10 +76,13 @@ calc_threshold() {
     fi
 }
 
-# calc_new_size NUM_DEVICES -> size in GB for the next volume, clamped to the
-# configured min/max. Larger volumes are used as the device count grows.
+# calc_new_size NUM_DEVICES AUTOSCALED_GB -> size in GB for the next volume, clamped
+# to the configured min/max and to the room left under the max logical volume size.
+# Larger volumes are used as the device count grows.
 calc_new_size() {
     local num_devices="$1"
+    local autoscaled_gb="$2"
+    local room_gb=$(( MAX_LOGICAL_VOLUME_SIZE - autoscaled_gb ))
     local new_size="$MIN_EBS_VOLUME_SIZE"
     if [ "$num_devices" -ge 4 ] && [ "$num_devices" -le 6 ]; then
         if [ "$MAX_EBS_VOLUME_SIZE" -ge 299 ] && [ "$MIN_EBS_VOLUME_SIZE" -le 299 ]; then
@@ -100,6 +103,7 @@ calc_new_size() {
     elif [ "$num_devices" -gt 10 ]; then
         new_size="$MAX_EBS_VOLUME_SIZE"
     fi
+    [ "$new_size" -le "$room_gb" ] || new_size="$room_gb"
     echo "$new_size"
 }
 
@@ -112,14 +116,14 @@ read_fs_stats() {
         | awk 'END { gsub(/%/, "", $4); print $1, $2, $3, $4 }'
 }
 
-# can_grow NUM_DEVICES AUTOSCALED_GB -> 0 if another volume may be added.
+# can_grow NUM_DEVICES AUTOSCALED_GB -> 0 if another minimum-size volume may be added.
 # Gates on the autoscaled bytes, not total filesystem size, so a large local
 # instance-store already in the volume group does not disable autoscaling.
 can_grow() {
     local num_devices="$1"
     local autoscaled_gb="$2"
     [ "$num_devices" -lt "$MAX_EBS_VOLUME_COUNT" ] || return 1
-    [ "$autoscaled_gb" -lt "$MAX_LOGICAL_VOLUME_SIZE" ] || return 1
+    [ $(( autoscaled_gb + MIN_EBS_VOLUME_SIZE )) -le "$MAX_LOGICAL_VOLUME_SIZE" ] || return 1
     return 0
 }
 
@@ -170,7 +174,7 @@ add_space() {
     fi
     local vol_size device
     local status=0
-    vol_size=$(calc_new_size "$num_devices")
+    vol_size=$(calc_new_size "$num_devices" "$autoscaled_gb")
     loginfo "extending ${MOUNTPOINT} by ${vol_size}GB"
     device=$("$CREATE_VOLUME" --size "$vol_size" --max-attached-volumes "$MAX_EBS_VOLUME_COUNT") || status=$?
     case "$status" in
