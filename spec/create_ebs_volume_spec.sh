@@ -54,6 +54,8 @@ Describe 'bin/create-ebs-volume volume creation'
     }
     Before 'setup'
 
+    modify_calls() { grep -c modify-instance-attribute "$CALLS"; }
+
     # Happy path returns the real NVMe device, and DeleteOnTermination must
     # reference the BDM name, not the NVMe path.
     It 'prints the real NVMe device and enables DeleteOnTermination by BDM name'
@@ -70,6 +72,8 @@ Describe 'bin/create-ebs-volume volume creation'
       The status should be success
       The output should equal /dev/nvme1n1
       The stderr should include 'DeleteOnTermination NOT enabled'
+      The result of function modify_calls should equal 5
+      The contents of file "$CALLS" should not include 'delete-volume'
     End
 
     # If the volume never becomes available it must be deleted, not leaked.

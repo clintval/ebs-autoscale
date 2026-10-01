@@ -116,7 +116,7 @@ retry() {
     local i=1
     local status=0
     while :; do
-        # Not an if: an untaken if leaves $? at 0, losing the command's status.
+        # Use && rather than if so $? below holds the command's status.
         "$@" && return 0
         status=$?
         if [ "$i" -ge "$attempts" ]; then
