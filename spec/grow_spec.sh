@@ -47,7 +47,7 @@ Describe 'bin/ebs-autoscale growth attempts'
     VOLUMES_JSON=$(jq -nc --argjson n "$1" --argjson size "$2" --arg iid "$INSTANCE_ID" \
       '{Volumes: [range($n) | {VolumeId: "vol-0\(.)", Size: $size, State: "in-use",
         Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}],
-        Attachments: [{InstanceId: $iid, Device: "/dev/sd\([102 + .] | implode)", State: "attached"}]}]}')
+        Attachments: [{InstanceId: $iid, Device: "/dev/sd\([102 + .] | implode)", State: "attached", DeleteOnTermination: true}]}]}')
   }
   # Points run_daemon at a scratch mount and a fresh log, and makes it stop after one tick.
   loop_setup() {
@@ -511,6 +511,76 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'when an attached autoscaled volume lacks DeleteOnTermination'
+    dot_setup() {
+      EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.dot-log"
+      : > "$EBS_AUTOSCALE_LOG_FILE"
+    }
+    Before 'dot_setup'
+
+    # clear_dot INDEX [UPDATE]: applies UPDATE (default: DeleteOnTermination false) to volume INDEX's attachment.
+    clear_dot() {
+      VOLUMES_JSON=$(printf '%s' "$VOLUMES_JSON" | jq -c --argjson i "$1" ".Volumes[\$i].Attachments[0] |= (${2:-.DeleteOnTermination = false})")
+    }
+    modify_calls() { grep -c modify-instance-attribute "$CALLS" || :; }
+
+    It 'enables it with one modify call by BDM name and volume ID'
+      set_volumes 2 100
+      clear_dot 1
+      When call attempt_grow 10
+      The status should be success
+      The result of function modify_calls should equal 1
+      The contents of file "$CALLS" should include 'DeviceName=/dev/sdg,Ebs={DeleteOnTermination=true,VolumeId=vol-01}'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'enabled DeleteOnTermination on vol-01 (/dev/sdg)'
+    End
+
+    It 'treats a missing DeleteOnTermination as false'
+      clear_dot 0 'del(.DeleteOnTermination)'
+      When call attempt_grow 10
+      The result of function modify_calls should equal 1
+    End
+
+    It 'makes no modify call when every volume has it'
+      set_volumes 2 100
+      When call attempt_grow 10
+      The status should be success
+      The result of function modify_calls should equal 0
+    End
+
+    It 'stops at an authorization error and still grows'
+      MAX_EBS_VOLUME_COUNT=16
+      set_volumes 2 100
+      clear_dot 0; clear_dot 1
+      aws() {
+        printf '%s\n' "$*" >> "$CALLS"
+        case "$*" in
+          *modify-instance-attribute*)
+            echo 'An error occurred (UnauthorizedOperation) when calling the ModifyInstanceAttribute operation: denied' >&2
+            return 254
+            ;;
+        esac
+        printf '%s' "$VOLUMES_JSON"
+      }
+      When call attempt_grow 95
+      The status should be success
+      The result of function modify_calls should equal 1
+      The value "$(create_count)" should equal 1
+      The stderr should include 'ec2:ModifyInstanceAttribute'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'finished extending'
+    End
+
+    It 'repairs a volume left without it at the startup reconcile'
+      loop_setup
+      clear_dot 0
+      read_fs_stats() { echo '100 10 90 10'; }
+      When run run_daemon
+      The status should be success
+      The result of function modify_calls should equal 1
+      The value "$(create_count)" should equal 0
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'enabled DeleteOnTermination on vol-00 (/dev/sdf)'
+    End
+  End
+
   Describe 'when an autoscaled volume is attached outside the volume group'
     # Fixtures mirror output captured on AL2023 with lvm2 2.03.16, with made-up IDs.
     use_stray_fixtures() {
@@ -579,7 +649,14 @@ Describe 'bin/ebs-autoscale growth attempts'
     It 'folds it and counts volumes from one describe-volumes call'
       When call attempt_grow 95
       The contents of file "$GROWS" should equal /dev/nvme2n1
-      The value "$(aws_call_count)" should equal 1
+      The value "$(grep -c describe-volumes "$CALLS")" should equal 1
+    End
+
+    It 'enables DeleteOnTermination on it as well as folding it'
+      When call attempt_grow 95
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+      The contents of file "$CALLS" should include 'DeviceName=/dev/sdg,Ebs={DeleteOnTermination=true,VolumeId=vol-0b2c3d4e5f6071829}'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'enabled DeleteOnTermination on vol-0b2c3d4e5f6071829 (/dev/sdg)'
     End
 
     It 'folds it even when it fills the attached volume limit'

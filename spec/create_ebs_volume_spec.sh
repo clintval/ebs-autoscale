@@ -32,12 +32,13 @@ Describe 'bin/create-ebs-volume volume creation'
       INSTANCE_ID=i-0123; AWS_AZ=us-west-2a; AWS_REGION=us-west-2
       OWNED_VOLUMES='{"Volumes":[]}'
       CALLS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.aws-calls"
-      : > "$CALLS"
+      SLEEPS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.sleeps"
+      : > "$CALLS"; : > "$SLEEPS"
       export CALLS
       # Deterministic stubs for the device layer.
       get_next_logical_device() { printf '/dev/sdf'; }
       resolve_nvme_device() { printf '/dev/nvme1n1'; }
-      sleep() { :; }
+      sleep() { printf '%s\n' "$1" >> "$SLEEPS"; }
       # Record every aws invocation and return canned responses.
       aws() {
         printf '%s\n' "$*" >> "$CALLS"
@@ -47,7 +48,12 @@ Describe 'bin/create-ebs-volume volume creation'
           *describe-volumes*)            echo "$OWNED_VOLUMES" ;;
           *create-volume*)               echo '{"VolumeId":"vol-0abc"}' ;;
           *attach-volume*)               return "${ATTACH_RC:-0}" ;;
-          *modify-instance-attribute*)   return "${MODIFY_RC:-0}" ;;
+          *modify-instance-attribute*)
+            # The first MODIFY_FAILURES calls fail with the MODIFY_ERROR code, as the AWS CLI reports it.
+            [ "$(modify_calls)" -gt "${MODIFY_FAILURES:-0}" ] && return 0
+            echo "An error occurred (${MODIFY_ERROR}) when calling the ModifyInstanceAttribute operation: failed" >&2
+            return 254
+            ;;
           *delete-volume*)
             [ "${DELETE_RC:-0}" -eq 0 ] || echo 'An error occurred (IncorrectState)' >&2
             return "${DELETE_RC:-0}"
@@ -96,13 +102,52 @@ Describe 'bin/create-ebs-volume volume creation'
 
     # A failed DeleteOnTermination is logged loudly but must not abort the attach.
     It 'logs an ERR but still returns the device when DeleteOnTermination never succeeds'
-      MODIFY_RC=1
+      MODIFY_FAILURES=5; MODIFY_ERROR=RequestLimitExceeded
       When run create_and_attach_volume
       The status should be success
       The output should equal /dev/nvme1n1
-      The stderr should include 'DeleteOnTermination NOT enabled'
+      The stderr should include 'volume vol-0abc DeleteOnTermination NOT enabled after retries'
       The result of function modify_calls should equal 5
+      The contents of file "$SLEEPS" should equal "$(printf '2\n4\n6\n8')"
       The contents of file "$CALLS" should not include 'delete-volume'
+    End
+
+    Describe 'when DeleteOnTermination fails transiently'
+      Parameters
+        RequestLimitExceeded
+        IncorrectState
+      End
+
+      It "retries $1 and enables it on the third attempt"
+        MODIFY_FAILURES=2; MODIFY_ERROR=$1
+        When run create_and_attach_volume
+        The status should be success
+        The output should equal /dev/nvme1n1
+        The stderr should include "($1)"
+        The stderr should not include 'NOT enabled'
+        The result of function modify_calls should equal 3
+        The contents of file "$SLEEPS" should equal "$(printf '2\n4')"
+      End
+    End
+
+    Describe 'when DeleteOnTermination is not authorized'
+      Parameters
+        UnauthorizedOperation
+        AuthFailure
+        AccessDenied
+      End
+
+      It "stops after one $1 and still returns the device"
+        MODIFY_FAILURES=5; MODIFY_ERROR=$1
+        When run create_and_attach_volume
+        The status should be success
+        The output should equal /dev/nvme1n1
+        The stderr should include "volume vol-0abc DeleteOnTermination NOT enabled"
+        The stderr should include "($1)"
+        The stderr should include 'ec2:ModifyInstanceAttribute'
+        The result of function modify_calls should equal 1
+        The contents of file "$SLEEPS" should equal ''
+      End
     End
 
     # A volume whose device never appears stays attached, so it must not outlive the instance.

@@ -68,6 +68,27 @@ Describe 'shared/utils.sh read_owned_volumes'
     The output should equal '0|0|0||'
   End
 
+  Describe 'lists the attached autoscaled volumes lacking DeleteOnTermination'
+    missing_dot() {
+      read_owned_volumes || return
+      printf '%s\n' "$OWNED_MISSING_DOT"
+    }
+
+    Parameters
+      'as volume ID and device pairs' '.' 'vol-0b2c3d4e5f6071829 /dev/sdg'
+      'counting a missing flag as false' '.Attachments[0] |= del(.DeleteOnTermination)' 'vol-0a1b2c3d4e5f60718 /dev/sdf vol-0b2c3d4e5f6071829 /dev/sdg'
+      'but not a detaching one' '.Attachments[0].State = "detaching" | .Attachments[0].DeleteOnTermination = false' 'vol-0b2c3d4e5f6071829 /dev/sdg'
+      'but not one without the creation tag' '.Tags |= map(select(.Key != "amazon-ebs-autoscale-creation-time")) | .Attachments[0].DeleteOnTermination = false' 'vol-0b2c3d4e5f6071829 /dev/sdg'
+      'but not one attached to another instance' '.Attachments[0].InstanceId = "i-0fedcba9876543210" | .Attachments[0].DeleteOnTermination = false' 'vol-0b2c3d4e5f6071829 /dev/sdg'
+    End
+
+    It "$1"
+      edit_volume 0 "$2"
+      When call missing_dot
+      The output should equal "$3"
+    End
+  End
+
   Describe 'fails closed on a response missing fields'
     Parameters
       'when Volumes is missing' 'del(.Volumes)'

@@ -111,8 +111,8 @@ logthis() {
 CREATION_TAG=amazon-ebs-autoscale-creation-time
 
 # read_owned_volumes: one describe-volumes for this instance's volumes, ignoring deleting, deleted and
-# errored ones; sets OWNED_ATTACHED_COUNT, OWNED_ATTACHED_IDS, OWNED_CREATED_COUNT, OWNED_CREATED_GB
-# and OWNED_CLAIMED_DEVICES, or fails.
+# errored ones; sets OWNED_ATTACHED_COUNT, OWNED_ATTACHED_IDS, OWNED_CREATED_COUNT, OWNED_CREATED_GB,
+# OWNED_CLAIMED_DEVICES and OWNED_MISSING_DOT ("VOLUME_ID DEVICE" pairs on one line), or fails.
 # shellcheck disable=SC2034
 read_owned_volumes() {
     local response summary
@@ -131,15 +131,17 @@ read_owned_volumes() {
         | [.Volumes[] | select(.State | . != "deleting" and . != "deleted" and . != "error")] as $volumes
         | [$volumes[]
             | select(any(.Tags[]?; .Key == $tag))
-            | select(any(.Attachments[]?; .InstanceId == $iid and .State == "attached"))
-            | .VolumeId] as $attached
+            | .VolumeId as $id
+            | .Attachments[]? | select(.InstanceId == $iid and .State == "attached")
+            | {$id, Device, DeleteOnTermination}] as $attached
         | "\($attached | length) \($volumes | length) \([$volumes[].Size] | add // 0)",
-          ($attached | join(" ")),
+          ([$attached[].id] | join(" ")),
+          ([$attached[] | select(.DeleteOnTermination != true) | .id, .Device] | join(" ")),
           ($volumes[].Attachments[]? | select(.InstanceId == $iid) | .Device)' 2>/dev/null) || return 1
-    { read -r OWNED_ATTACHED_COUNT OWNED_CREATED_COUNT OWNED_CREATED_GB; read -r OWNED_ATTACHED_IDS; } <<EOF
+    { read -r OWNED_ATTACHED_COUNT OWNED_CREATED_COUNT OWNED_CREATED_GB; read -r OWNED_ATTACHED_IDS; read -r OWNED_MISSING_DOT; } <<EOF
 $summary
 EOF
-    OWNED_CLAIMED_DEVICES=$(printf '%s\n' "$summary" | sed '1,2d')
+    OWNED_CLAIMED_DEVICES=$(printf '%s\n' "$summary" | sed '1,3d')
 }
 
 # _nvme_candidates: print attached NVMe namespace devices, one per line.
@@ -191,6 +193,36 @@ retry() {
         sleep $(( i * 2 ))
         i=$(( i + 1 ))
     done
+}
+
+# enable_delete_on_termination BDM_DEVICE VOLUME_ID -> 0 enabled, 2 not authorized after 1 attempt, 1 failed after 5 with retry's backoff.
+enable_delete_on_termination() {
+    local bdm_device="$1"
+    local volume_id="$2"
+    local i=1
+    local err status
+    while :; do
+        err=$(aws ec2 modify-instance-attribute \
+            --region "$AWS_REGION" \
+            --instance-id "$INSTANCE_ID" \
+            --block-device-mappings "DeviceName=${bdm_device},Ebs={DeleteOnTermination=true,VolumeId=${volume_id}}" 2>&1 >/dev/null) && break
+        status=$?
+        err=$(printf '%s' "$err" | tr '\n' ' ')
+        case "$err" in
+            *'(UnauthorizedOperation)'*|*'(AuthFailure)'*|*'(AccessDenied)'*)
+                logerr "volume ${volume_id} DeleteOnTermination NOT enabled, so it may outlive the instance; not retrying an authorization error (grant ec2:ModifyInstanceAttribute): ${err}"
+                return 2
+                ;;
+        esac
+        if [ "$i" -ge 5 ]; then
+            logerr "volume ${volume_id} DeleteOnTermination NOT enabled after retries; it may outlive the instance: ${err}"
+            return 1
+        fi
+        logerr "modify-instance-attribute failed (status ${status}), attempt ${i}/5 for ${volume_id}: ${err}"
+        sleep $(( i * 2 ))
+        i=$(( i + 1 ))
+    done
+    loginfo "enabled DeleteOnTermination on ${volume_id} (${bdm_device})"
 }
 
 starting() {
