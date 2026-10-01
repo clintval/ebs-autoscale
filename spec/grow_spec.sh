@@ -269,6 +269,13 @@ Describe 'bin/ebs-autoscale growth attempts'
       The status should be success
       The value "$NUM_DEVICES $THRESHOLD" should equal '4 80'
     End
+
+    It 'made one describe-volumes call'
+      When call attempt_grow 95
+      The status should be success
+      The value "$(create_count)" should equal 1
+      The value "$(aws_call_count)" should equal 1
+    End
   End
 
   Describe 'when the refreshed device count raises the threshold'
@@ -297,7 +304,7 @@ Describe 'bin/ebs-autoscale growth attempts'
       When run run_daemon
       The status should be success
       The value "$(create_count)" should equal 0
-      The value "$(aws_call_count)" should equal 3
+      The value "$(aws_call_count)" should equal 2
     End
   End
 
@@ -405,6 +412,12 @@ Describe 'bin/ebs-autoscale growth attempts'
     It 'counts the folded volume as attached'
       When call attempt_grow 95
       The value "$NUM_DEVICES" should equal 2
+    End
+
+    It 'folds it and counts volumes from one describe-volumes call'
+      When call attempt_grow 95
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+      The value "$(aws_call_count)" should equal 1
     End
 
     It 'folds it even when it fills the attached volume limit'

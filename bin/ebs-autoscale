@@ -193,16 +193,12 @@ device_volume_id() {
     esac
 }
 
-# fold_stray_volumes: grow onto this instance's attached autoscaled volumes that are not in the VG,
+# fold_stray_volumes VOLUME_IDS: grow onto those attached autoscaled volumes that are not in the VG,
 # if blank or a PV in no VG. Returns 0 if it folded any, 1 if there were none, 2 on failure.
 fold_stray_volumes() {
-    local volume_ids pvs_table serials dev pv_vg id vol
+    local volume_ids="$1"
+    local pvs_table serials dev pv_vg id vol
     local folded=1
-    if ! read_owned_volumes; then
-        logerr "could not query EC2 for this instance's volumes"
-        return 2
-    fi
-    volume_ids=$OWNED_ATTACHED_IDS
     [ -n "$volume_ids" ] || return 1
     pvs_table=$(pv_table) || return 2
     if ! serials=$(lsblk -dno NAME,SERIAL 2>>"$EBS_AUTOSCALE_LOG_FILE"); then
@@ -300,23 +296,22 @@ attempt_grow() {
     now=$(now_seconds)
     [ "$now" -ge "$NEXT_GROW_ATTEMPT" ] || return 1
 
-    local usage autoscaled_gb
     local status=0 fold=0
-    fold_stray_volumes || fold=$?
-    if [ "$fold" -eq 2 ]; then
-        status=1
-    elif usage=$(get_autoscaled_usage); then
-        NUM_DEVICES=${usage% *}
-        autoscaled_gb=${usage#* }
+    if read_owned_volumes; then
+        NUM_DEVICES=$OWNED_ATTACHED_COUNT
         THRESHOLD=$(calc_threshold "$NUM_DEVICES")
+        fold_stray_volumes "$OWNED_ATTACHED_IDS" || fold=$?
         # A fold grew the filesystem, so PCT is stale until the next tick.
         [ "$fold" -ne 0 ] || GROW_RETRY_DELAY=0
-        if [ "$fold" -eq 0 ] || [ "$pct" -lt "$THRESHOLD" ]; then
+        if [ "$fold" -eq 2 ]; then
+            status=1
+        elif [ "$fold" -eq 0 ] || [ "$pct" -lt "$THRESHOLD" ]; then
             RECONCILE_PENDING=0
             return 0
+        else
+            loginfo "low disk (${pct}%)"
+            add_space "$NUM_DEVICES" "$OWNED_CREATED_GB" || status=$?
         fi
-        loginfo "low disk (${pct}%)"
-        add_space "$NUM_DEVICES" "$autoscaled_gb" || status=$?
     else
         logerr "could not query EC2 for this instance's volumes"
         status=1
