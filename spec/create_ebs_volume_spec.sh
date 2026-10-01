@@ -133,6 +133,14 @@ Describe 'bin/create-ebs-volume volume creation'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
+    It 'exits 2 without creating a volume when no device names are free'
+      get_next_logical_device() { return 1; }
+      When run create_and_attach_volume
+      The status should equal 2
+      The stderr should include 'no device names available'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
     # A failed attach must also delete the just-created volume.
     It 'deletes the volume when the attach fails'
       ATTACH_RC=1

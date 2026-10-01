@@ -260,7 +260,7 @@ create_and_attach_volume() {
     local bdm_device
     bdm_device=$(get_next_logical_device "$claimed_devices")
     if [ -z "$bdm_device" ]; then
-        error "no device names available for a new volume"
+        limit_reached "no device names available for a new volume"
     fi
     loginfo "next available device name: ${bdm_device}"
 
