@@ -171,10 +171,8 @@ instance_tag_specifications() {
         '[{ResourceType:"volume", Tags: ([{Key:"source-instance",Value:$iid},{Key:"amazon-ebs-autoscale-creation-time",Value:$ts}] + .)}]'
 }
 
-# jittered_ms MILLIS -> MILLIS scaled by a random factor in [0.75, 1.25].
-# Spreads out the polls of instances that start growing at the same moment.
-# Uses /dev/urandom because dash has no $RANDOM; with no randomness available
-# the factor falls back to 0.75.
+# jittered_ms MILLIS
+# Prints MILLIS scaled by a random factor in [0.75, 1.25]; dash lacks $RANDOM.
 jittered_ms() {
     local millis="$1"
     local random
@@ -183,15 +181,9 @@ jittered_ms() {
 }
 
 # wait_for_volume_available VOLUME_ID
-# Polls this one volume until it is available, sleeping 1 s between polls at
-# first and backing off by 1.5x to a 5 s cap (each sleep jittered around
-# the capped delay). This is far quicker than `aws ec2 wait volume-available`,
-# whose fixed 15 s poll interval dominated grow latency, and still cheap: a
-# typical volume is ready within two or three polls. Returns 1 immediately if
-# the volume is in state "error", "deleting" or "deleted", or once
-# EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT (default 600) elapses. The timeout counts the planned sleeps, so
-# slow describe calls stretch it, and the fractional sleep relies on GNU sleep
-# (Amazon Linux 2023).
+# Polls with jittered backoff (1 s, x1.5, 5 s cap) until the volume is available.
+# Fails on error/deleting/deleted or after EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT
+# seconds of sleep (default 600).
 wait_for_volume_available() {
     local volume_id="$1"
     local timeout_ms=$(( ${EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT:-600} * 1000 ))
