@@ -178,6 +178,13 @@ Describe 'bin/ebs-autoscale growth attempts'
         The value "$(create_count)" should equal 0
       End
     End
+
+    It 'stops at a growth limit at the max even with no minimum volume size'
+      MIN_EBS_VOLUME_SIZE=0
+      When call add_space 11 8000
+      The status should equal 2
+      The value "$(create_count)" should equal 0
+    End
   End
 
   Describe 'after a successful grow'
