@@ -1,0 +1,96 @@
+{
+    "Volumes": [
+        {
+            "AvailabilityZoneId": "usw2-az1",
+            "Iops": 3000,
+            "Tags": [
+                {
+                    "Key": "Name",
+                    "Value": "ebs-autoscale-e2e"
+                },
+                {
+                    "Key": "source-instance",
+                    "Value": "i-0e1f2a3b4c5d6e7f8"
+                },
+                {
+                    "Key": "amazon-ebs-autoscale-creation-time",
+                    "Value": "2026-09-30T12:00:00Z"
+                }
+            ],
+            "VolumeType": "gp3",
+            "MultiAttachEnabled": false,
+            "Throughput": 125,
+            "Operator": {
+                "Managed": false,
+                "HiddenByDefault": false
+            },
+            "VolumeArn": "arn:aws:ec2:us-west-2:123456789012:volume/vol-0a1b2c3d4e5f60718",
+            "OwnerId": "123456789012",
+            "VolumeId": "vol-0a1b2c3d4e5f60718",
+            "Size": 10,
+            "SnapshotId": "",
+            "AvailabilityZone": "us-west-2b",
+            "State": "in-use",
+            "CreateTime": "2026-09-30T12:00:02.000000+00:00",
+            "Attachments": [
+                {
+                    "DeleteOnTermination": true,
+                    "EbsCardIndex": 0,
+                    "VolumeId": "vol-0a1b2c3d4e5f60718",
+                    "InstanceId": "i-0e1f2a3b4c5d6e7f8",
+                    "Device": "/dev/sdf",
+                    "State": "attached",
+                    "AttachTime": "2026-09-30T12:00:07+00:00"
+                }
+            ],
+            "Encrypted": true,
+            "KmsKeyId": "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-0000-0000-000000000000"
+        },
+        {
+            "AvailabilityZoneId": "usw2-az1",
+            "Iops": 3000,
+            "Tags": [
+                {
+                    "Key": "amazon-ebs-autoscale-creation-time",
+                    "Value": "2026-09-30T12:10:00Z"
+                },
+                {
+                    "Key": "source-instance",
+                    "Value": "i-0e1f2a3b4c5d6e7f8"
+                },
+                {
+                    "Key": "Name",
+                    "Value": "ebs-autoscale-e2e"
+                }
+            ],
+            "VolumeType": "gp3",
+            "MultiAttachEnabled": false,
+            "Throughput": 125,
+            "Operator": {
+                "Managed": false,
+                "HiddenByDefault": false
+            },
+            "VolumeArn": "arn:aws:ec2:us-west-2:123456789012:volume/vol-0b2c3d4e5f6071829",
+            "OwnerId": "123456789012",
+            "VolumeId": "vol-0b2c3d4e5f6071829",
+            "Size": 10,
+            "SnapshotId": "",
+            "AvailabilityZone": "us-west-2b",
+            "State": "in-use",
+            "CreateTime": "2026-09-30T12:10:02.000000+00:00",
+            "Attachments": [
+                {
+                    "DeleteOnTermination": false,
+                    "EbsCardIndex": 0,
+                    "VolumeId": "vol-0b2c3d4e5f6071829",
+                    "InstanceId": "i-0e1f2a3b4c5d6e7f8",
+                    "Device": "/dev/sdg",
+                    "State": "attached",
+                    "AttachTime": "2026-09-30T12:10:07+00:00"
+                }
+            ],
+            "Encrypted": true,
+            "KmsKeyId": "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-0000-0000-000000000000"
+        }
+    ]
+}

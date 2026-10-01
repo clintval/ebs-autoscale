@@ -29,6 +29,8 @@ Describe 'bin/ebs-autoscale growth attempts'
     now_seconds() { printf '%s' "$NOW"; }
     sleep() { :; }
     grow_filesystem() { return "$GROW_RC"; }
+    _nvme_candidates() { :; }
+    pvs() { :; }
     # Serves describe-volumes from VOLUMES_JSON and records each call.
     aws() {
       printf '%s\n' "$*" >> "$CALLS"
@@ -291,7 +293,7 @@ Describe 'bin/ebs-autoscale growth attempts'
       When run run_daemon
       The status should be success
       The value "$(create_count)" should equal 0
-      The value "$(aws_call_count)" should equal 2
+      The value "$(aws_call_count)" should equal 3
     End
   End
 
@@ -333,6 +335,125 @@ Describe 'bin/ebs-autoscale growth attempts'
       When call attempt_grow 95
       The status should equal 1
       The value "$(create_count)" should equal 1
+    End
+  End
+
+  Describe 'when an autoscaled volume is attached outside the volume group'
+    # Fixtures mirror output captured on AL2023 with lvm2 2.03.16, with made-up IDs.
+    use_stray_fixtures() {
+      INSTANCE_ID='i-0e1f2a3b4c5d6e7f8'; LVM_VG=autoscale_vg; LVM_LV=autoscale_lv
+      MAX_EBS_VOLUME_COUNT=16
+      VOLUMES_JSON=$(fixture describe-volumes.json)
+      LSBLK=$(fixture lsblk-name-serial.txt)
+      PVS=$(fixture pvs-pv-vg.txt)
+      ALIASES=$(fixture udev-aliases.txt)
+      EBSNVME=false
+      EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.log"
+      GROWS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.grows"
+      : > "$EBS_AUTOSCALE_LOG_FILE"; : > "$GROWS"
+      echo /dev/nvme3n1 > "$CREATE_OUTPUT"
+      grow_filesystem() { echo "$1" >> "$GROWS"; return "$GROW_RC"; }
+      _nvme_candidates() { printf '%s\n' "$LSBLK" | awk '{print "/dev/" $1}'; }
+      # Prints the SERIAL column for the last argument, like lsblk -dno SERIAL DEV.
+      lsblk() { for dev; do :; done; printf '%s\n' "$LSBLK" | awk -v n="${dev#/dev/}" '$1 == n {print $2}'; }
+      pvs() { printf '%s\n' "$PVS"; }
+      # Resolves the /dev/sdX aliases that pvs reports to their NVMe devices.
+      readlink() { printf '%s\n' "$ALIASES" | awk -v p="$2" '$1 == p {print $2; found = 1} END {if (!found) print p}'; }
+    }
+    Before 'use_stray_fixtures'
+
+    It 'folds it into the volume group instead of creating a volume'
+      When call attempt_grow 95
+      The status should be success
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+      The value "$(create_count)" should equal 0
+    End
+
+    It 'logs the fold'
+      When call attempt_grow 95
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'folding stray volume vol-0b2c3d4e5f6071829 (/dev/nvme2n1) into autoscale_vg'
+    End
+
+    It 'counts the folded volume as attached'
+      When call attempt_grow 95
+      The value "$NUM_DEVICES" should equal 2
+    End
+
+    It 'folds it even when it fills the attached volume limit'
+      MAX_EBS_VOLUME_COUNT=2
+      When call attempt_grow 95
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+    End
+
+    It 'folds it even when usage is under the threshold'
+      When call attempt_grow 10
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+    End
+
+    It 'folds a physical volume that is in no volume group'
+      PVS=$(printf '  /dev/sdf   autoscale_vg\n  /dev/sdg               ')
+      When call attempt_grow 95
+      The contents of file "$GROWS" should equal /dev/nvme2n1
+    End
+
+    It 'creates a volume once every attached volume is in the volume group'
+      PVS=$(fixture pvs-pv-vg-folded.txt)
+      When call attempt_grow 95
+      The value "$(create_count)" should equal 1
+      The contents of file "$GROWS" should equal /dev/nvme3n1
+    End
+
+    It 'does not fold a device whose serial is not an attached volume of this instance'
+      PVS=$(fixture pvs-pv-vg-folded.txt)
+      LSBLK=$(printf '%s\nnvme3n1 vol0c3d4e5f607182930' "$LSBLK")
+      echo /dev/nvme4n1 > "$CREATE_OUTPUT"
+      When call attempt_grow 95
+      The contents of file "$GROWS" should equal /dev/nvme4n1
+    End
+
+    It 'does not fold a volume that is detaching'
+      VOLUMES_JSON=$(fixture describe-volumes.json | jq -c '.Volumes[1].Attachments[0].State = "detaching"')
+      When call attempt_grow 95
+      The contents of file "$GROWS" should equal /dev/nvme3n1
+    End
+
+    It 'does not create a volume when the fold fails'
+      GROW_RC=1
+      When call attempt_grow 95
+      The status should be success
+      The stderr should include 'growing failed'
+      The value "$(create_count)" should equal 0
+    End
+
+    It 'does not create a volume when the volume group cannot be listed'
+      pvs() { echo '  lvm error' >&2; return 5; }
+      When call attempt_grow 95
+      The stderr should include 'growing failed'
+      The value "$(create_count)" should equal 0
+    End
+
+    Describe 'when the daemon starts'
+      run_daemon_at_10_percent() {
+        MOUNTPOINT="$SHELLSPEC_TMPBASE"; LOG_INTERVAL=1; DETECTION_INTERVAL=2
+        read_fs_stats() { echo '100 10 90 10'; }
+        run_daemon
+      }
+
+      It 'folds it even when usage is under the threshold'
+        sleep() { exit 0; }
+        When run run_daemon_at_10_percent
+        The status should be success
+        The contents of file "$GROWS" should equal /dev/nvme2n1
+      End
+
+      It 'retries a failed fold after the backoff even when usage is under the threshold'
+        grow_filesystem() { echo "$1" >> "$GROWS"; [ "$(wc -l < "$GROWS")" -gt 1 ]; }
+        sleep() { NOW=$(( NOW + 10 )); [ "$NOW" -lt 1020 ] || exit 0; }
+        When run run_daemon_at_10_percent
+        The status should be success
+        The stderr should include 'growing failed'
+        The contents of file "$GROWS" should equal "$(printf '/dev/nvme2n1\n/dev/nvme2n1')"
+      End
     End
   End
 

@@ -45,14 +45,19 @@ CREATE_VOLUME="${EBS_AUTOSCALE_HOME}/bin/create-ebs-volume"
 # autoscaled volume from one attached for other reasons.
 CREATION_TAG=amazon-ebs-autoscale-creation-time
 
+# describe_owned_volumes -> describe-volumes JSON for every volume this instance created.
+describe_owned_volumes() {
+    aws ec2 describe-volumes \
+        --region "$AWS_REGION" \
+        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
+        --output json 2>/dev/null
+}
+
 # get_autoscaled_usage -> "NUM_DEVICES AUTOSCALED_GB": attached autoscaled volumes and the
 # GB of every volume this instance created. Fails without output if EC2 cannot be queried.
 get_autoscaled_usage() {
     local response usage
-    response=$(aws ec2 describe-volumes \
-        --region "$AWS_REGION" \
-        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
-        --output json 2>/dev/null)
+    response=$(describe_owned_volumes)
     [ -n "$response" ] || return 1
     usage=$(printf '%s' "$response" | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" \
         '[([.Volumes[]
@@ -163,6 +168,48 @@ grow_filesystem() {
     esac
 }
 
+# vg_members -> the VG's physical volumes as device paths; pvs reports EC2's /dev/sdX aliases.
+vg_members() {
+    local report pv
+    report=$(pvs --noheadings -o pv_name,vg_name) || return 1
+    for pv in $(printf '%s\n' "$report" | awk -v vg="$LVM_VG" '$2 == vg { print $1 }'); do
+        readlink -f "$pv"
+    done
+}
+
+# fold_stray_volumes: grow onto this instance's attached autoscaled volumes that are not in the VG.
+# Returns 0 if it folded any, 1 if there were none, 2 on failure.
+fold_stray_volumes() {
+    local response volume_ids members dev vol
+    local folded=1
+    response=$(describe_owned_volumes)
+    if [ -z "$response" ] || ! volume_ids=$(printf '%s' "$response" \
+        | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" \
+            '.Volumes[]
+                | select(any(.Attachments[]?; .InstanceId == $iid and .State == "attached"))
+                | select(any(.Tags[]?; .Key == $tag))
+                | .VolumeId' 2>/dev/null); then
+        logerr "could not query EC2 for this instance's volumes"
+        return 2
+    fi
+    [ -n "$volume_ids" ] || return 1
+    members=$(vg_members) || return 2
+    for dev in $(_nvme_candidates); do
+        printf '%s\n' "$members" | grep -qxF -- "$dev" && continue
+        for vol in $volume_ids; do
+            match_nvme_device "$dev" "$vol" "$(printf '%s' "$vol" | tr -d -)" || continue
+            loginfo "folding stray volume ${vol} (${dev}) into ${LVM_VG}"
+            if ! grow_filesystem "$dev"; then
+                logerr "failed to fold ${vol} (${dev}) into ${LVM_VG}"
+                return 2
+            fi
+            folded=0
+            break
+        done
+    done
+    return "$folded"
+}
+
 # add_space NUM_DEVICES AUTOSCALED_GB -> 0 grown, 2 at a growth limit, 1 failed.
 add_space() {
     local num_devices="$1"
@@ -210,6 +257,9 @@ GROW_RETRY_MAX_DELAY=300
 GROW_RETRY_DELAY=0
 NEXT_GROW_ATTEMPT=0
 
+# Set at startup and after a failed attempt, so strays are folded even under the threshold.
+RECONCILE_PENDING=1
+
 # Whole seconds of uptime, a monotonic clock that chrony cannot step.
 now_seconds() {
     local uptime
@@ -217,8 +267,8 @@ now_seconds() {
     printf '%s' "${uptime%.*}"
 }
 
-# attempt_grow PCT: refreshes NUM_DEVICES and THRESHOLD, then grows if PCT is still over it.
-# Returns 1 if skipped while backing off, else 0.
+# attempt_grow PCT: folds stray volumes, refreshes NUM_DEVICES and THRESHOLD, then grows
+# if PCT is still over it. Returns 1 if skipped while backing off, else 0.
 attempt_grow() {
     local pct="$1"
     local now
@@ -226,12 +276,20 @@ attempt_grow() {
     [ "$now" -ge "$NEXT_GROW_ATTEMPT" ] || return 1
 
     local usage autoscaled_gb
-    local status=0
-    if usage=$(get_autoscaled_usage); then
+    local status=0 fold=0
+    fold_stray_volumes || fold=$?
+    if [ "$fold" -eq 2 ]; then
+        status=1
+    elif usage=$(get_autoscaled_usage); then
         NUM_DEVICES=${usage% *}
         autoscaled_gb=${usage#* }
         THRESHOLD=$(calc_threshold "$NUM_DEVICES")
-        [ "$pct" -ge "$THRESHOLD" ] || return 0
+        # A fold grew the filesystem, so PCT is stale until the next tick.
+        if [ "$fold" -eq 0 ] || [ "$pct" -lt "$THRESHOLD" ]; then
+            GROW_RETRY_DELAY=0
+            RECONCILE_PENDING=0
+            return 0
+        fi
         loginfo "low disk (${pct}%)"
         add_space "$NUM_DEVICES" "$autoscaled_gb" || status=$?
     else
@@ -239,6 +297,7 @@ attempt_grow() {
         status=1
     fi
     now=$(now_seconds)
+    RECONCILE_PENDING=0
     case "$status" in
         0)
             NUM_DEVICES=$(( NUM_DEVICES + 1 ))
@@ -251,6 +310,7 @@ attempt_grow() {
             loginfo "growth limit reached; checking again in ${GROW_RETRY_MAX_DELAY}s"
             ;;
         *)
+            RECONCILE_PENDING=1
             if [ "$GROW_RETRY_DELAY" -eq 0 ]; then
                 GROW_RETRY_DELAY=$GROW_RETRY_MIN_DELAY
             else
@@ -285,8 +345,8 @@ run_daemon() {
         stats=$(read_fs_stats "$MOUNTPOINT")
         pct=$(printf '%s' "$stats" | awk '{print $4}')
 
-        if [ "${pct:-0}" -ge "$THRESHOLD" ]; then
-            if attempt_grow "$pct"; then
+        if [ "${pct:-0}" -ge "$THRESHOLD" ] || [ "$RECONCILE_PENDING" -eq 1 ]; then
+            if attempt_grow "${pct:-0}"; then
                 log_count="$LOG_INTERVAL"
             fi
         fi
