@@ -314,4 +314,50 @@ Describe 'bin/create-ebs-volume volume creation'
       The value "$(awk '$1 > 6.25 { over++ } $1 == 5 { pinned++ } END { print (over + 0 == 0 && pinned + 0 < 5) ? "spread" : "over=" over + 0 " pinned=" pinned + 0 }' "$SLEEPS")" should equal spread
     End
   End
+
+  Describe 'command line'
+    # Stub curl and aws for an instance that has created 16 detached volumes;
+    # create-volume fails, so a run that gets past the limits exits 1.
+    # shellcheck disable=SC2016
+    setup() {
+      STUB_DIR="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.cli-bin"
+      CFG="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.cli-config.json"
+      CALLS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.cli-aws-calls"
+      mkdir -p "$STUB_DIR"
+      : > "$CALLS"
+      export CALLS
+      echo '{"volume": {"type": "gp3", "iops": 3000, "throughput": 125, "encrypted": 1},
+        "limits": {"max_logical_volume_size": 8000, "max_ebs_volume_count": 16}}' > "$CFG"
+      printf '%s\n' '#!/bin/sh' 'case "$*" in' \
+        '  *api/token*) echo token ;;' \
+        '  *availability-zone*) echo us-west-2a ;;' \
+        '  *instance-id*) echo i-0123 ;;' \
+        'esac' > "$STUB_DIR/curl"
+      printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> "$CALLS"' 'case "$*" in' \
+        "  *describe-volumes*) jq -nc '{Volumes: [range(16) | {Size: 10, Attachments: []}]}' ;;" \
+        '  *) exit 1 ;;' \
+        'esac' > "$STUB_DIR/aws"
+      chmod +x "$STUB_DIR/curl" "$STUB_DIR/aws"
+    }
+    Before 'setup'
+
+    create_ebs_volume() {
+      env -u SHELLSPEC_VERSION PATH="$STUB_DIR:$PATH" EBS_AUTOSCALE_CONFIG_FILE="$CFG" \
+        sh "$(script_path bin/create-ebs-volume)" "$@"
+    }
+
+    It 'defaults the created volume limit to --max-attached-volumes'
+      When run create_ebs_volume --size 100 --max-attached-volumes 32
+      The status should equal 1
+      The stderr should include 'could not create volume'
+      The contents of file "$CALLS" should include 'create-volume'
+    End
+
+    It 'stops at an explicit --max-created-volumes'
+      When run create_ebs_volume --size 100 --max-created-volumes 16 --max-attached-volumes 32
+      The status should equal 3
+      The stderr should include 'maximum number of created volumes reached (16)'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+  End
 End

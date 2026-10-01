@@ -353,7 +353,7 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
     ENCRYPTED=$(get_config_value .volume.encrypted)
     MAX_LOGICAL_VOLUME_SIZE=$(get_config_value .limits.max_logical_volume_size)
     MAX_ATTACHED_VOLUMES=$(get_config_value .limits.max_ebs_volume_count)
-    MAX_CREATED_VOLUMES=$MAX_ATTACHED_VOLUMES
+    MAX_CREATED_VOLUMES=""
     SIZE=""
 
     while [ "$#" -gt 0 ]; do
@@ -371,6 +371,7 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
             *)                          error "unexpected argument $1" ;;
         esac
     done
+    : "${MAX_CREATED_VOLUMES:=$MAX_ATTACHED_VOLUMES}"
 
     if [ -z "$SIZE" ]; then
         echo "$USAGE" >&2
