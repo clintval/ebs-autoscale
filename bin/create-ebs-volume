@@ -30,7 +30,7 @@
 
 # Creates one EBS volume, attaches it to this instance, enables
 # DeleteOnTermination, and prints the resulting block device path on stdout.
-# Exits 2 when a limit forbids another volume and 1 on any other failure.
+# Exits 3 when a limit forbids another volume and 1 on any other failure.
 # Targets Amazon Linux 2023 on Nitro, where attached volumes appear as
 # /dev/nvme*n1 rather than at the /dev/sd* name passed to attach-volume.
 
@@ -75,7 +75,7 @@ error() {
 
 limit_reached() {
     logerr "$1"
-    exit 2
+    exit 3
 }
 
 # get_next_logical_device CLAIMED

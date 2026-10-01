@@ -108,35 +108,35 @@ Describe 'bin/create-ebs-volume volume creation'
       The stderr should not include 'deleted it'
     End
 
-    # A reached limit exits 2 so callers can tell it from a failure.
-    It 'exits 2 without creating a volume at the total created size limit'
+    # A reached limit exits 3 so callers can tell it from a failure.
+    It 'exits 3 without creating a volume at the total created size limit'
       MAX_LOGICAL_VOLUME_SIZE=0
       When run create_and_attach_volume
-      The status should equal 2
+      The status should equal 3
       The stderr should include 'maximum total EBS volume size'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
-    It 'exits 2 without creating a volume at the created volume limit'
+    It 'exits 3 without creating a volume at the created volume limit'
       MAX_CREATED_VOLUMES=0
       When run create_and_attach_volume
-      The status should equal 2
+      The status should equal 3
       The stderr should include 'maximum number of created volumes'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
-    It 'exits 2 without creating a volume at the attached volume limit'
+    It 'exits 3 without creating a volume at the attached volume limit'
       MAX_ATTACHED_VOLUMES=0
       When run create_and_attach_volume
-      The status should equal 2
+      The status should equal 3
       The stderr should include 'maximum number of attached volumes'
       The contents of file "$CALLS" should not include 'create-volume'
     End
 
-    It 'exits 2 without creating a volume when no device names are free'
+    It 'exits 3 without creating a volume when no device names are free'
       get_next_logical_device() { return 1; }
       When run create_and_attach_volume
-      The status should equal 2
+      The status should equal 3
       The stderr should include 'no device names available'
       The contents of file "$CALLS" should not include 'create-volume'
     End

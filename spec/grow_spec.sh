@@ -46,7 +46,7 @@ Describe 'bin/ebs-autoscale growth attempts'
   create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
   # shellcheck disable=SC2016
-  create_at_limit() { printf '#!/bin/sh\necho create >> "$CREATES"\nexit 2\n' > "$CREATE_VOLUME"; }
+  create_at_limit() { printf '#!/bin/sh\necho create >> "$CREATES"\nexit 3\n' > "$CREATE_VOLUME"; }
   create_count() { wc -l < "$CREATES" | tr -d ' '; }
   aws_call_count() { wc -l < "$CALLS" | tr -d ' '; }
 
