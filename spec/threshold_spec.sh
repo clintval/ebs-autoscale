@@ -24,26 +24,36 @@ Describe 'bin/ebs-autoscale scaling ladders'
   End
 
   Describe 'calc_new_size'
-    setup() { MIN_EBS_VOLUME_SIZE=150; MAX_EBS_VOLUME_SIZE=1500; }
+    setup() { MIN_EBS_VOLUME_SIZE=150; MAX_EBS_VOLUME_SIZE=1500; MAX_LOGICAL_VOLUME_SIZE=8000; }
     Before 'setup'
 
     # New-volume size climbs with the device count, clamped to the configured
     # min/max, so a busy instance grows in larger steps.
     It 'uses the minimum for the first few devices'
-      When call calc_new_size 1
+      When call calc_new_size 1 0
       The output should equal 150
     End
     It 'steps up in the 4-6 device band'
-      When call calc_new_size 5
+      When call calc_new_size 5 0
       The output should equal 300
     End
     It 'steps up again in the 7-10 device band'
-      When call calc_new_size 8
+      When call calc_new_size 8 0
       The output should equal 1000
     End
     It 'caps at the max beyond 10 devices'
-      When call calc_new_size 11
+      When call calc_new_size 11 0
       The output should equal 1500
+    End
+    It 'shrinks to what is left under the max total size'
+      When call calc_new_size 11 7700
+      The output should equal 300
+    End
+    It 'does not turn a non-numeric size into the whole remaining budget'
+      MAX_EBS_VOLUME_SIZE=null
+      When call calc_new_size 11 300
+      The output should equal null
+      The stderr should be present
     End
   End
 End

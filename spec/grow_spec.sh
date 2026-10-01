@@ -144,6 +144,117 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'near the maximum total size'
+    record_create_args() {
+      MAX_EBS_VOLUME_COUNT=16; MAX_LOGICAL_VOLUME_SIZE=8000
+      # shellcheck disable=SC2016
+      printf '#!/bin/sh\necho "$*" >> "$CREATES"\ncat "$CREATE_OUTPUT"\n' > "$CREATE_VOLUME"
+    }
+    Before 'record_create_args'
+    requested_sizes() { sed -n 's/.*--size \([0-9]*\).*/\1/p' "$CREATES"; }
+
+    # With 11 devices the next step is 1500 GB.
+    Describe 'with room for at least the minimum volume size'
+      Parameters
+        6500 1500
+        7700 300
+        7850 150
+      End
+      Example "requests ${2} GB at ${1} of 8000 GB"
+        When call add_space 11 "$1"
+        The status should be success
+        The result of function requested_sizes should equal "$2"
+      End
+    End
+
+    Describe 'with less than the minimum volume size left'
+      Parameters
+        7851
+        7900
+      End
+      Example "stops at a growth limit at ${1} of 8000 GB"
+        When call add_space 11 "$1"
+        The status should equal 2
+        The value "$(create_count)" should equal 0
+      End
+    End
+
+    It 'stops at a growth limit at the max even with no minimum volume size'
+      MIN_EBS_VOLUME_SIZE=0
+      When call add_space 11 8000
+      The status should equal 2
+      The value "$(create_count)" should equal 0
+    End
+
+    It 'passes its max total size to create-ebs-volume'
+      When call add_space 11 100
+      The status should be success
+      The contents of file "$CREATES" should include '--max-total-created-size 8000'
+    End
+
+    Describe 'the log line when not growing'
+      fresh_log() {
+        EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.log"
+        : > "$EBS_AUTOSCALE_LOG_FILE"
+      }
+      Before 'fresh_log'
+
+      It 'names the minimum volume size when too little is left for it'
+        When call add_space 11 7900
+        The status should equal 2
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'autoscaled=7900/8000GB min=150GB'
+      End
+
+      It 'leaves the minimum out when the device count stops growth'
+        When call add_space 16 100
+        The status should equal 2
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'devices=16/16'
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'min='
+      End
+    End
+
+    Describe 'when create-ebs-volume refuses at the size limit'
+      # Runs the real create-ebs-volume against stub IMDS and EC2 that already count
+      # 7900 GB; its config allows 10000 GB, so only the daemon's 8000 GB refuses.
+      # shellcheck disable=SC2016
+      real_create_volume() {
+        local bin="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.real-create-bin"
+        local cfg="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.real-create-config.json"
+        mkdir -p "$bin"
+        echo '{"volume": {"type": "gp3", "iops": 3000, "throughput": 125, "encrypted": 1},
+          "limits": {"max_logical_volume_size": 10000, "max_ebs_volume_count": 16}}' > "$cfg"
+        printf '%s\n' '#!/bin/sh' 'case "$*" in' \
+          '  *api/token*) echo token ;;' \
+          '  *availability-zone*) echo us-west-2a ;;' \
+          '  *instance-id*) echo i-0123 ;;' \
+          'esac' > "$bin/curl"
+        printf '%s\n' '#!/bin/sh' 'case "$*" in' \
+          "  *describe-volumes*) jq -nc '{Volumes: [{Size: 7900}]}' ;;" \
+          '  *) exit 1 ;;' \
+          'esac' > "$bin/aws"
+        chmod +x "$bin/curl" "$bin/aws"
+        printf '%s\n' '#!/bin/sh' \
+          "exec env -u SHELLSPEC_VERSION PATH=\"${bin}:\$PATH\" EBS_AUTOSCALE_CONFIG_FILE=\"${cfg}\" sh \"$(script_path bin/create-ebs-volume)\" \"\$@\"" \
+          > "$CREATE_VOLUME"
+      }
+      Before 'real_create_volume'
+
+      It 'makes add_space report a growth limit'
+        When call add_space 11 6490
+        The status should equal 2
+        The stderr should include 'would exceed the maximum total EBS volume size (7900 of 8000 GB created)'
+      End
+
+      It 'makes the daemon wait 5 minutes before trying again'
+        set_volumes 11 590
+        When call attempt_grow 95
+        The status should be success
+        The stderr should include 'would exceed the maximum total EBS volume size'
+        The value "$NEXT_GROW_ATTEMPT" should equal 1300
+      End
+    End
+  End
+
   Describe 'after a successful grow'
     It 'advances the device count and threshold'
       set_volumes 3 100

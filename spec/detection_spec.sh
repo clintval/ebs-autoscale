@@ -22,7 +22,7 @@ Describe 'bin/ebs-autoscale free-space detection'
   End
 
   Describe 'can_grow'
-    setup() { MAX_EBS_VOLUME_COUNT=16; MAX_LOGICAL_VOLUME_SIZE=8000; }
+    setup() { MAX_EBS_VOLUME_COUNT=16; MAX_LOGICAL_VOLUME_SIZE=8000; MIN_EBS_VOLUME_SIZE=150; }
     Before 'setup'
 
     # The ceiling is on autoscaled bytes, so a large local instance-store in
@@ -33,6 +33,10 @@ Describe 'bin/ebs-autoscale free-space detection'
     End
     It 'stops once the autoscaled size ceiling is reached'
       When call can_grow 2 8000
+      The status should be failure
+    End
+    It 'stops once less than the minimum volume size is left'
+      When call can_grow 2 7851
       The status should be failure
     End
     It 'stops once the device count ceiling is reached'
