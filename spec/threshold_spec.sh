@@ -49,5 +49,11 @@ Describe 'bin/ebs-autoscale scaling ladders'
       When call calc_new_size 11 7700
       The output should equal 300
     End
+    It 'does not turn a non-numeric size into the whole remaining budget'
+      MAX_EBS_VOLUME_SIZE=null
+      When call calc_new_size 11 300
+      The output should equal null
+      The stderr should be present
+    End
   End
 End

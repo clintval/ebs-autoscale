@@ -103,7 +103,7 @@ calc_new_size() {
     elif [ "$num_devices" -gt 10 ]; then
         new_size="$MAX_EBS_VOLUME_SIZE"
     fi
-    [ "$new_size" -le "$room_gb" ] || new_size="$room_gb"
+    [ "$room_gb" -lt "$new_size" ] && new_size="$room_gb"
     echo "$new_size"
 }
 
