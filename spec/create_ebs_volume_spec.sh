@@ -359,5 +359,11 @@ Describe 'bin/create-ebs-volume volume creation'
       The stderr should include 'maximum number of created volumes reached (16)'
       The contents of file "$CALLS" should not include 'create-volume'
     End
+
+    It 'documents its exit statuses in --help'
+      When run create_ebs_volume --help
+      The status should be success
+      The output should include '0 on success, 3 when a limit forbids another volume, 1 on any other failure.'
+    End
   End
 End

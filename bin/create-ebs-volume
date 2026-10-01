@@ -65,17 +65,16 @@ Options
     --max-created-volumes N
                         Max number of volumes created by this instance.
                         (Default: --max-attached-volumes)
+
+Exit status
+
+    0 on success, 3 when a limit forbids another volume, 1 on any other failure.
 USAGE_EOF
 )
 
 error() {
     logerr "$1"
-    exit 1
-}
-
-limit_reached() {
-    logerr "$1"
-    exit 3
+    exit "${2:-1}"
 }
 
 # get_next_logical_device CLAIMED
@@ -249,19 +248,19 @@ create_and_attach_volume() {
         '.Volumes[].Attachments[]? | select(.InstanceId == $iid) | .Device')
 
     if [ "$total_created_size" -ge "$MAX_LOGICAL_VOLUME_SIZE" ]; then
-        limit_reached "maximum total EBS volume size reached (${MAX_LOGICAL_VOLUME_SIZE} GB)"
+        error "maximum total EBS volume size reached (${MAX_LOGICAL_VOLUME_SIZE} GB)" 3
     fi
     if [ "$created_count" -ge "$MAX_CREATED_VOLUMES" ]; then
-        limit_reached "maximum number of created volumes reached (${MAX_CREATED_VOLUMES})"
+        error "maximum number of created volumes reached (${MAX_CREATED_VOLUMES})" 3
     fi
     if [ "$attached_count" -ge "$MAX_ATTACHED_VOLUMES" ]; then
-        limit_reached "maximum number of attached volumes reached (${MAX_ATTACHED_VOLUMES})"
+        error "maximum number of attached volumes reached (${MAX_ATTACHED_VOLUMES})" 3
     fi
 
     local bdm_device
     bdm_device=$(get_next_logical_device "$claimed_devices")
     if [ -z "$bdm_device" ]; then
-        limit_reached "no device names available for a new volume"
+        error "no device names available for a new volume" 3
     fi
     loginfo "next available device name: ${bdm_device}"
 
