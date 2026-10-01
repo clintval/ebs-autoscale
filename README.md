@@ -138,6 +138,7 @@ A percentage is a poor trigger for a large initial volume (50% of 2 TiB grows wi
 It replaces the utilization thresholds entirely and cannot be combined with `--initial-utilization-threshold`.
 If the floor exceeds the free space on the initial volume, volumes are added right after start-up until it is met.
 Pick a floor larger than what your jobs can write during one grow, which takes about a minute or two.
+NB: free-space grows are padded by 8% because ext4 reserves part of every new volume, so one grow clears the floor.
 
 When install creates the initial volume, it counts toward `--max-total-created-size`, and install fails if `--initial-size` exceeds it.
 The runtime config is written to `/etc/ebs-autoscale.json`; override the path with `EBS_AUTOSCALE_CONFIG_FILE`.
