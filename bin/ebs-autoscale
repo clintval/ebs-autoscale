@@ -131,8 +131,8 @@ can_grow() {
     return 0
 }
 
-# lvresize to use the whole volume group, tolerating exit 5 (already at size)
-# and guarding against a hang on the LVM lock.
+# lvresize to use the whole volume group, guarding against a hang on the LVM lock.
+# LVM also exits 5 for a missing LV or VG, so 5 means already at size only with no free extents.
 lvresize_full() {
     local lv="$1"
     local i=1
@@ -140,7 +140,8 @@ lvresize_full() {
     while [ "$i" -le 3 ]; do
         timeout -k 6 60 lvresize -l 100%VG "$lv"
         status=$?
-        if [ "$status" -eq 0 ] || [ "$status" -eq 5 ]; then
+        [ "$status" -eq 0 ] && return 0
+        if [ "$status" -eq 5 ] && [ "$(vg_free_extents)" = 0 ]; then
             return 0
         fi
         logerr "lvresize failed (status ${status}), attempt ${i}/3"
@@ -174,6 +175,11 @@ lvm_report() {
     timeout -k 6 60 "$@" 2>>"$EBS_AUTOSCALE_LOG_FILE" || status=$?
     [ "$status" -eq 0 ] || logerr "$1 failed (status ${status})"
     return "$status"
+}
+
+# vg_free_extents -> the number of unallocated extents in the VG, empty if vgs fails.
+vg_free_extents() {
+    lvm_report vgs --noheadings -o vg_free_count "$LVM_VG" | tr -d ' '
 }
 
 # vg_members -> the VG's physical volumes as device paths; pvs reports EC2's /dev/sdX aliases.

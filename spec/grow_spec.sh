@@ -475,6 +475,39 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  Describe 'lvresize_full'
+    # LVM exits 5 both when the LV is already full and when the LV or VG is missing.
+    use_lvm_stubs() {
+      LVM_VG=autoscale_vg
+      VGS=$(fixture vgs-vg-free-count-0.txt)
+      vgs() { printf '%s\n' "$VGS"; }
+    }
+    Before 'use_lvm_stubs'
+
+    It 'treats exit 5 as already at size when the volume group has no free extents'
+      lvresize() { echo '  New size (2559 extents) matches existing size (2559 extents).' >&2; return 5; }
+      When call lvresize_full /dev/mapper/autoscale_vg-autoscale_lv
+      The status should be success
+      The stderr should include 'matches existing size'
+    End
+
+    It 'fails on exit 5 while the volume group has free extents'
+      VGS=$(fixture vgs-vg-free-count-2559.txt)
+      lvresize() { echo '  Logical volume nope not found in volume group autoscale_vg.' >&2; return 5; }
+      When call lvresize_full /dev/mapper/autoscale_vg-nope
+      The status should be failure
+      The stderr should include 'lvresize failed (status 5), attempt 3/3'
+    End
+
+    It 'fails on exit 5 when the free extents cannot be read'
+      vgs() { echo '  Volume group "autoscale_vg" not found' >&2; return 5; }
+      lvresize() { echo '  Volume group "autoscale_vg" not found' >&2; return 5; }
+      When call lvresize_full /dev/mapper/autoscale_vg-autoscale_lv
+      The status should be failure
+      The stderr should include 'vgs failed (status 5)'
+    End
+  End
+
   Describe 'when creating the volume fails'
     It 'fails when create-ebs-volume exits 1 even if it printed a device'
       create_exits 1
