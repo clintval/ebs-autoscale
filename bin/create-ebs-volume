@@ -288,18 +288,7 @@ create_and_attach_volume() {
         error "could not attach volume ${volume_id}; deleted it"
     fi
 
-    # Resolve the real NVMe path for callers; the BDM name above is only what the
-    # EC2 API understands, not necessarily a device that exists on the instance.
-    local real_device
-    real_device=$(resolve_nvme_device "$volume_id") || true
-    if [ -z "$real_device" ]; then
-        error "could not resolve the NVMe device for volume ${volume_id}"
-    fi
-    loginfo "volume ${volume_id} present as ${real_device} (bdm ${bdm_device})"
-
-    # DeleteOnTermination must reference the BDM name, not the NVMe path. Retry
-    # a few times; if it still fails the volume is usable but may outlive the
-    # instance, so log loudly rather than aborting an otherwise-good attach.
+    # Keyed by BDM name and set before the device lookup so an unresolved volume cannot outlive the instance.
     if retry 5 aws ec2 modify-instance-attribute \
         --region "$region" \
         --instance-id "$instance_id" \
@@ -308,6 +297,15 @@ create_and_attach_volume() {
     else
         logerr "volume ${volume_id} DeleteOnTermination NOT enabled after retries; it may outlive the instance"
     fi
+
+    # Resolve the real NVMe path for callers; the BDM name above is only what the
+    # EC2 API understands, not necessarily a device that exists on the instance.
+    local real_device
+    real_device=$(resolve_nvme_device "$volume_id") || true
+    if [ -z "$real_device" ]; then
+        error "could not resolve the NVMe device for volume ${volume_id}"
+    fi
+    loginfo "volume ${volume_id} present as ${real_device} (bdm ${bdm_device})"
 
     printf '%s\n' "$real_device"
 }

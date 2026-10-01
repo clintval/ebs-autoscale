@@ -105,6 +105,15 @@ Describe 'bin/create-ebs-volume volume creation'
       The contents of file "$CALLS" should not include 'delete-volume'
     End
 
+    # A volume whose device never appears stays attached, so it must not outlive the instance.
+    It 'enables DeleteOnTermination even when the NVMe device never resolves'
+      resolve_nvme_device() { return 1; }
+      When run create_and_attach_volume
+      The status should equal 1
+      The stderr should include 'could not resolve the NVMe device'
+      The result of function modify_calls should equal 1
+    End
+
     # If the volume never becomes available it must be deleted, not leaked.
     It 'deletes the volume when it enters the error state'
       VOLUME_STATE=error
