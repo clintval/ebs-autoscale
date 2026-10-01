@@ -30,20 +30,20 @@ Describe 'bin/ebs-autoscale scaling ladders'
 
     Describe 'in percentage mode'
       It 'is low at the threshold'
-        When call space_is_low 999999999999 50
+        When call space_is_low 50 999999999999
         The status should be success
       End
       It 'is not low under the threshold, however little space is left'
-        When call space_is_low 1 49
+        When call space_is_low 49 1
         The status should be failure
       End
       It 'is not low when the utilization is empty'
-        When call space_is_low 1 ''
+        When call space_is_low '' 1
         The status should be failure
       End
       It 'follows the device-count threshold'
         THRESHOLD=80
-        When call space_is_low 1 79
+        When call space_is_low 79 1
         The status should be failure
       End
     End
@@ -53,33 +53,33 @@ Describe 'bin/ebs-autoscale scaling ladders'
       Before 'setup_floor'
 
       It 'is low when free space is under the floor even at low utilization'
-        When call space_is_low $(( 99 * GB )) 5
+        When call space_is_low 5 $(( 99 * GB ))
         The status should be success
       End
       It 'is low for a floor too large to express in bytes'
         MIN_FREE_SPACE=107374182400
-        When call space_is_low $(( 99 * GB )) 5
+        When call space_is_low 5 $(( 99 * GB ))
         The status should be success
       End
       It 'is not low when free space equals the floor'
-        When call space_is_low $(( 100 * GB )) 99
+        When call space_is_low 99 $(( 100 * GB ))
         The status should be failure
       End
       It 'is not low when free space is over the floor even at 95% utilization'
-        When call space_is_low $(( 101 * GB )) 95
+        When call space_is_low 95 $(( 101 * GB ))
         The status should be failure
       End
       It 'is low one byte under the floor'
-        When call space_is_low $(( 100 * GB - 1 )) 5
+        When call space_is_low 5 $(( 100 * GB - 1 ))
         The status should be success
       End
       It 'ignores the utilization threshold'
         THRESHOLD=10
-        When call space_is_low $(( 500 * GB )) 95
+        When call space_is_low 95 $(( 500 * GB ))
         The status should be failure
       End
       It 'is not low when free space is unknown'
-        When call space_is_low '' 95
+        When call space_is_low 95 ''
         The status should be failure
       End
     End

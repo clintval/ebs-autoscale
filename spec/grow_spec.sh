@@ -297,6 +297,15 @@ Describe 'bin/ebs-autoscale growth attempts'
     End
   End
 
+  It 'logs the utilization and threshold when low on disk'
+    EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.log"
+    : > "$EBS_AUTOSCALE_LOG_FILE"
+    When call attempt_grow 95 $(( 50 * GB ))
+    The status should be success
+    The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'low disk (util=95% threshold=50%)'
+    The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'min_free='
+  End
+
   Describe 'in free-space mode'
     free_space_mode() { MIN_FREE_SPACE=100; MAX_EBS_VOLUME_COUNT=16; }
     Before 'free_space_mode'
@@ -337,8 +346,8 @@ Describe 'bin/ebs-autoscale growth attempts'
       : > "$EBS_AUTOSCALE_LOG_FILE"
       When call attempt_grow 10 $(( 50 * GB ))
       The status should be success
-      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'low disk (50GB free)'
-      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'low disk (10%)'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'low disk (free=50GB min_free=100GB)'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'util='
     End
 
     Describe 'sizing the next volume'
@@ -423,7 +432,7 @@ Describe 'bin/ebs-autoscale growth attempts'
       read_fs_stats() { echo "$(( 1000 * GB )) $(( 850 * GB )) $(( 150 * GB )) 95"; }
       When run run_daemon
       The status should be success
-      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'min_free=100GB'
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'free=150GB min_free=100GB'
       The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'threshold='
     End
 

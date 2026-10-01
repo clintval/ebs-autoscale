@@ -65,16 +65,25 @@ calc_threshold() {
 # Bytes per GB as EBS counts them (GiB).
 BYTES_PER_GB=1073741824
 
-# space_is_low AVAIL_BYTES PCT -> 0 if a grow is due. With MIN_FREE_SPACE set the
+# space_is_low PCT AVAIL_BYTES -> 0 if a grow is due. With MIN_FREE_SPACE set the
 # decision is free space alone and the utilization thresholds are ignored.
 # Compares in whole GB so a floor mistakenly given in bytes cannot overflow.
 space_is_low() {
-    local avail_bytes="$1"
-    local pct="$2"
+    local pct="$1"
+    local avail_bytes="$2"
     if [ "$MIN_FREE_SPACE" -gt 0 ]; then
         [ -n "$avail_bytes" ] && [ $(( avail_bytes / BYTES_PER_GB )) -lt "$MIN_FREE_SPACE" ]
     else
         [ "${pct:-0}" -ge "$THRESHOLD" ]
+    fi
+}
+
+# describe_trigger PCT AVAIL_BYTES -> the free GB and floor in free-space mode, else the utilization and threshold.
+describe_trigger() {
+    if [ "$MIN_FREE_SPACE" -gt 0 ]; then
+        printf 'free=%sGB min_free=%sGB' "${2:+$(( $2 / BYTES_PER_GB ))}" "$MIN_FREE_SPACE"
+    else
+        printf 'util=%s%% threshold=%s%%' "$1" "$THRESHOLD"
     fi
 }
 
@@ -344,16 +353,12 @@ attempt_grow() {
         [ "$fold" -ne 0 ] || GROW_RETRY_DELAY=0
         if [ "$fold" -eq 2 ]; then
             status=1
-        elif [ "$fold" -eq 0 ] || ! space_is_low "$avail_bytes" "$pct"; then
+        elif [ "$fold" -eq 0 ] || ! space_is_low "$pct" "$avail_bytes"; then
             RECONCILE_PENDING=0
             return 0
         else
-            if [ "$MIN_FREE_SPACE" -gt 0 ]; then
-                loginfo "low disk ($(( avail_bytes / BYTES_PER_GB ))GB free)"
-                shortfall_gb=$(( MIN_FREE_SPACE - avail_bytes / BYTES_PER_GB ))
-            else
-                loginfo "low disk (${pct}%)"
-            fi
+            loginfo "low disk ($(describe_trigger "$pct" "$avail_bytes"))"
+            [ "$MIN_FREE_SPACE" -eq 0 ] || shortfall_gb=$(( MIN_FREE_SPACE - avail_bytes / BYTES_PER_GB ))
             add_space "$NUM_DEVICES" "$OWNED_CREATED_GB" "$shortfall_gb" || status=$?
         fi
     else
@@ -399,7 +404,7 @@ run_daemon() {
     done
 
     local log_count="$LOG_INTERVAL"
-    local stats pct avail_bytes usage trigger
+    local stats pct avail_bytes usage
     # Only the initial threshold depends on this; it is refreshed before any grow.
     usage=$(get_autoscaled_usage) || usage="0 0"
     NUM_DEVICES=${usage% *}
@@ -411,19 +416,14 @@ run_daemon() {
         { set -f; set -- $stats; set +f; }
         avail_bytes=${3:-}; pct=${4:-}
 
-        if space_is_low "$avail_bytes" "$pct" || [ "$RECONCILE_PENDING" -eq 1 ]; then
+        if space_is_low "$pct" "$avail_bytes" || [ "$RECONCILE_PENDING" -eq 1 ]; then
             if attempt_grow "${pct:-0}" "$avail_bytes"; then
                 log_count="$LOG_INTERVAL"
             fi
         fi
 
         if [ "$log_count" -ge "$LOG_INTERVAL" ]; then
-            if [ "$MIN_FREE_SPACE" -gt 0 ]; then
-                trigger="min_free=${MIN_FREE_SPACE}GB"
-            else
-                trigger="util=${pct}% threshold=${THRESHOLD}%"
-            fi
-            loginfo "devices=${NUM_DEVICES} stats_bytes=[${stats}] ${trigger}"
+            loginfo "devices=${NUM_DEVICES} stats_bytes=[${stats}] $(describe_trigger "$pct" "$avail_bytes")"
             log_count=0
         fi
         log_count=$(( log_count + 1 ))
