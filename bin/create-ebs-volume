@@ -171,6 +171,53 @@ instance_tag_specifications() {
         '[{ResourceType:"volume", Tags: ([{Key:"source-instance",Value:$iid},{Key:"amazon-ebs-autoscale-creation-time",Value:$ts}] + .)}]'
 }
 
+# jittered_ms MILLIS
+# Prints MILLIS scaled by a random factor in [0.75, 1.25]; dash lacks $RANDOM.
+jittered_ms() {
+    local millis="$1"
+    local random
+    random=$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')
+    printf '%s' $(( millis * (750 + ${random:-0} % 501) / 1000 ))
+}
+
+# wait_for_volume_available VOLUME_ID
+# Polls with jittered backoff (1 s, x1.5, 5 s cap) until the volume is available.
+# Fails on a describe error, on error/deleting/deleted, or after
+# EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT seconds of sleep (default 600).
+wait_for_volume_available() {
+    local volume_id="$1"
+    local timeout_ms=$(( ${EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT:-600} * 1000 ))
+    local base_ms=1000
+    local max_ms=5000
+    local elapsed_ms=0
+    local sleep_ms state
+    while :; do
+        if ! state=$(aws ec2 describe-volumes \
+            --region "$AWS_REGION" \
+            --volume-ids "$volume_id" \
+            --query 'Volumes[0].State' \
+            --output text 2>>"$EBS_AUTOSCALE_LOG_FILE"); then
+            logerr "could not describe volume ${volume_id}"
+            return 1
+        fi
+        case "$state" in
+            available) return 0 ;;
+            error|deleting|deleted)
+                logerr "volume ${volume_id} entered state ${state}"
+                return 1
+                ;;
+        esac
+        [ "$elapsed_ms" -lt "$timeout_ms" ] || break
+        sleep_ms=$(jittered_ms "$base_ms")
+        sleep "$(printf '%d.%03d' $(( sleep_ms / 1000 )) $(( sleep_ms % 1000 )))"
+        elapsed_ms=$(( elapsed_ms + sleep_ms ))
+        base_ms=$(( base_ms * 3 / 2 ))
+        [ "$base_ms" -le "$max_ms" ] || base_ms=$max_ms
+    done
+    logerr "timed out waiting for volume ${volume_id} to become available"
+    return 1
+}
+
 create_and_attach_volume() {
     local instance_id="$INSTANCE_ID"
     local availability_zone="$AWS_AZ"
@@ -246,8 +293,11 @@ create_and_attach_volume() {
 
     # If the volume never becomes available, delete it rather than leaking it
     # and then attaching something that is not ready.
-    if ! aws ec2 wait volume-available --region "$region" --volume-ids "$volume_id" >/dev/null 2>&1; then
-        aws ec2 delete-volume --region "$region" --volume-id "$volume_id" >/dev/null 2>&1
+    if ! wait_for_volume_available "$volume_id"; then
+        local delete_err
+        if ! delete_err=$(aws ec2 delete-volume --region "$region" --volume-id "$volume_id" 2>&1 >/dev/null); then
+            error "volume ${volume_id} did not become available and could not be deleted, so it may leak: ${delete_err}"
+        fi
         error "volume ${volume_id} did not become available; deleted it"
     fi
 
