@@ -41,31 +41,11 @@ EBS_AUTOSCALE_HOME="${EBS_AUTOSCALE_HOME:-/usr/local/ebs-autoscale}"
 
 CREATE_VOLUME="${EBS_AUTOSCALE_HOME}/bin/create-ebs-volume"
 
-# Tag written to every volume this tool attaches; its presence distinguishes an
-# autoscaled volume from one attached for other reasons.
-CREATION_TAG=amazon-ebs-autoscale-creation-time
-
-# describe_owned_volumes -> describe-volumes JSON for every volume this instance created.
-describe_owned_volumes() {
-    aws ec2 describe-volumes \
-        --region "$AWS_REGION" \
-        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
-        --output json 2>/dev/null
-}
-
 # get_autoscaled_usage -> "NUM_DEVICES AUTOSCALED_GB": attached autoscaled volumes and the
 # GB of every volume this instance created. Fails without output if EC2 cannot be queried.
 get_autoscaled_usage() {
-    local response usage
-    response=$(describe_owned_volumes)
-    [ -n "$response" ] || return 1
-    usage=$(printf '%s' "$response" | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" \
-        '[([.Volumes[]
-            | select(any(.Attachments[]?; .InstanceId == $iid))
-            | select(any(.Tags[]?; .Key == $tag))] | length),
-          ([.Volumes[].Size] | add // 0)] | "\(.[0]) \(.[1])"' 2>/dev/null)
-    [ -n "$usage" ] || return 1
-    printf '%s' "$usage"
+    read_owned_volumes || return 1
+    printf '%s %s' "$OWNED_ATTACHED_COUNT" "$OWNED_CREATED_GB"
 }
 
 # calc_threshold NUM_DEVICES -> utilization percent that triggers a new volume.
@@ -216,18 +196,13 @@ device_volume_id() {
 # fold_stray_volumes: grow onto this instance's attached autoscaled volumes that are not in the VG,
 # if blank or a PV in no VG. Returns 0 if it folded any, 1 if there were none, 2 on failure.
 fold_stray_volumes() {
-    local response volume_ids pvs_table serials dev pv_vg id vol
+    local volume_ids pvs_table serials dev pv_vg id vol
     local folded=1
-    response=$(describe_owned_volumes)
-    if [ -z "$response" ] || ! volume_ids=$(printf '%s' "$response" \
-        | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" \
-            '.Volumes[]
-                | select(any(.Attachments[]?; .InstanceId == $iid and .State == "attached"))
-                | select(any(.Tags[]?; .Key == $tag))
-                | .VolumeId' 2>/dev/null); then
+    if ! read_owned_volumes; then
         logerr "could not query EC2 for this instance's volumes"
         return 2
     fi
+    volume_ids=$OWNED_ATTACHED_IDS
     [ -n "$volume_ids" ] || return 1
     pvs_table=$(pv_table) || return 2
     if ! serials=$(lsblk -dno NAME,SERIAL 2>>"$EBS_AUTOSCALE_LOG_FILE"); then

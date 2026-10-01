@@ -30,6 +30,7 @@ Describe 'bin/ebs-autoscale growth attempts'
     sleep() { :; }
     grow_filesystem() { return "$GROW_RC"; }
     _nvme_candidates() { :; }
+    lsblk() { :; }
     pvs() { :; }
     timeout() { shift 3; "$@"; }
     # Serves describe-volumes from VOLUMES_JSON and records each call.
@@ -44,7 +45,9 @@ Describe 'bin/ebs-autoscale growth attempts'
   # attached to this instance.
   set_volumes() {
     VOLUMES_JSON=$(jq -nc --argjson n "$1" --argjson size "$2" --arg iid "$INSTANCE_ID" \
-      '{Volumes: [range($n) | {Size: $size, Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}], Attachments: [{InstanceId: $iid}]}]}')
+      '{Volumes: [range($n) | {VolumeId: "vol-0\(.)", Size: $size, State: "in-use",
+        Tags: [{Key: "amazon-ebs-autoscale-creation-time", Value: "t"}],
+        Attachments: [{InstanceId: $iid, Device: "/dev/sd\([102 + .] | implode)", State: "attached"}]}]}')
   }
   create_succeeds() { echo /dev/nvme1n1 > "$CREATE_OUTPUT"; }
   create_fails() { : > "$CREATE_OUTPUT"; }
