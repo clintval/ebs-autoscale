@@ -6,7 +6,9 @@
 # /scratch past its utilization threshold, and asserts that the filesystem grew
 # and a second EBS volume was attached. It then stops the daemon, attaches a
 # tagged volume outside the volume group, restarts the daemon, and asserts the
-# volume is folded in without another being created. Finally it terminates the
+# volume is folded in without another being created. It then sets a
+# min_free_space floor over the free space at low utilization and asserts one
+# volume sized to the shortfall lifts free space over it. Finally it terminates the
 # instance and asserts that no autoscale volume was left behind, which is the
 # real test of the DeleteOnTermination handling. Every resource is ephemeral
 # and torn down on exit.
@@ -22,7 +24,7 @@
 # Environment overrides:
 #   AWS_REGION          Region to run in (default: your profile's, else us-west-2)
 #   E2E_INSTANCE_TYPE   Instance type (default: m5.large)
-#   E2E_INITIAL_GB      Initial scratch volume size in GB (default: 10)
+#   E2E_INITIAL_GB      Initial scratch volume size in GB (default: 10, at most 12)
 #   E2E_KEEP            If set, skip teardown so you can inspect the instance
 #   E2E_BUCKET          Reuse this S3 bucket instead of creating a throwaway one
 
@@ -47,6 +49,11 @@ RUN_ID="ebs-autoscale-e2e-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 
 log() { printf '[e2e] %s\n' "$*" >&2; }
 die() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit 1; }
+
+# Past 12 GB, ext4's ~7% overhead keeps the free-space phase's one E2E_INITIAL_GB + 1 volume from clearing its floor.
+if ! [[ "$INITIAL_GB" =~ ^[0-9]+$ ]] || (( INITIAL_GB > 12 )); then
+  die "E2E_INITIAL_GB must be a whole number no larger than 12"
+fi
 
 # Populated as resources are created; cleanup tears them down in reverse.
 INSTANCE_ID=""
@@ -147,6 +154,20 @@ owned_volume_count() {
     --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
     --query 'length(Volumes)' --output text
 }
+
+# Prints "VOLUME_ID SIZE_GB" for each volume this instance created.
+owned_volumes() {
+  aws ec2 describe-volumes --region "$REGION" \
+    --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
+    --query 'Volumes[].[VolumeId,Size]' --output text
+}
+
+# Prints the last non-empty line of an ssm_run command's output.
+ssm_last() {
+  ssm_run "$1" | awk 'NF { last = $0 } END { print last }'
+}
+
+GIB=1073741824
 
 log "region=$REGION type=$INSTANCE_TYPE run=$RUN_ID"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -297,6 +318,56 @@ log "folded: /scratch size=${folded}B; waiting to confirm no extra volume is cre
 sleep 20
 [[ "$(owned_volume_count)" -eq "$stray_count" ]] || die "expected ${stray_count} owned volumes after the fold, got $(owned_volume_count)"
 
+log "stopping the daemon to switch it to free-space mode"
+ssm_run 'systemctl stop ebs-autoscale' >/dev/null
+ladder_gb="$(ssm_last 'jq -r .limits.min_ebs_volume_size /etc/ebs-autoscale.json')"
+max_gb="$(ssm_last 'jq -r .limits.max_ebs_volume_size /etc/ebs-autoscale.json')"
+threshold="$(ssm_last 'jq -r .limits.initial_utilization_threshold /etc/ebs-autoscale.json')"
+[[ "$ladder_gb" =~ ^[0-9]+$ && "$max_gb" =~ ^[0-9]+$ && "$threshold" =~ ^[0-9]+$ ]] \
+  || die "could not read the volume sizes and threshold from /etc/ebs-autoscale.json"
+[[ "$stray_count" -le 3 ]] || die "the free-space phase needs at most 3 owned volumes to keep the ${ladder_gb} GB ladder size, got ${stray_count}"
+shortfall_gb=$(( (ladder_gb > max_gb ? ladder_gb : max_gb) + 1 ))
+before_ids="$(owned_volumes | awk '{ printf "%s ", $1 }')" || die "could not list the owned volumes"
+avail="$(ssm_last 'df -B1 --output=avail /scratch | tail -n1 | tr -d " "')"
+[[ "$avail" =~ ^[0-9]+$ ]] || die "could not read the free space on /scratch (got '${avail}')"
+# Ext4 keeps about 7% of a new volume, so free space sits 32 MiB under a whole GiB for one grow to clear the floor.
+ssm_run "fallocate -l $(( avail % GIB + 32 * 1024 * 1024 )) /scratch/e2e.floor" >/dev/null
+read -r avail pct <<<"$(ssm_last 'df -B1 --output=avail,pcent /scratch | tail -n1 | tr -d "%"')"
+[[ "$avail" =~ ^[0-9]+$ && "$pct" =~ ^[0-9]+$ ]] || die "could not read /scratch after the fill (got '${avail} ${pct}')"
+(( pct < threshold )) || die "utilization ${pct}% is not under the ${threshold}% threshold, so only the floor may trigger"
+free_gb=$(( avail / GIB ))
+floor_gb=$(( free_gb + shortfall_gb ))
+ssm_run "jq --arg f ${floor_gb} --arg m $(( max_gb * 4 )) '.limits.min_free_space = \$f | .limits.max_ebs_volume_size = \$m' /etc/ebs-autoscale.json > /tmp/ebs-autoscale.json && cat /tmp/ebs-autoscale.json > /etc/ebs-autoscale.json" >/dev/null
+[[ "$(ssm_last 'jq -r .limits.min_free_space /etc/ebs-autoscale.json')" == "$floor_gb" ]] \
+  || die "could not set min_free_space in /etc/ebs-autoscale.json"
+
+log "restarting the daemon with a ${floor_gb} GB floor over ${free_gb} GB free at ${pct}% utilization"
+ssm_run 'systemctl start ebs-autoscale' >/dev/null
+lifted=""
+for ((i = 0; i < 36; i++)); do
+  cur="$(ssm_last 'df -B1 --output=avail /scratch | tail -n1 | tr -d " "')"
+  if [[ "$cur" =~ ^[0-9]+$ ]] && (( cur >= floor_gb * GIB )); then lifted="$cur"; break; fi
+  sleep 5
+done
+[[ -n "$lifted" ]] || die "free space on /scratch did not rise over the ${floor_gb} GB floor"
+log "free space lifted to $(( lifted / GIB )) GB; waiting to confirm no extra volume is created"
+sleep 20
+new_vols="$(owned_volumes | awk -v before="$before_ids" \
+  'BEGIN { n = split(before, ids); for (i = 1; i <= n; i++) seen[ids[i]] = 1 } NF && !($1 in seen)')" \
+  || die "could not list the owned volumes"
+[[ "$(printf '%s\n' "$new_vols" | awk 'NF' | wc -l | tr -d ' ')" -eq 1 ]] \
+  || die "expected one new owned volume in free-space mode, got: $(printf '%s' "$new_vols" | tr '\n\t' '; ')"
+new_gb="$(printf '%s\n' "$new_vols" | awk 'NF { print $2 }')"
+[[ "$new_gb" == "$shortfall_gb" ]] \
+  || die "expected the new volume to cover the ${shortfall_gb} GB shortfall rather than the ${ladder_gb} GB ladder size, got ${new_gb} GB"
+cur="$(ssm_last 'df -B1 --output=avail /scratch | tail -n1 | tr -d " "')"
+if ! [[ "$cur" =~ ^[0-9]+$ ]] || (( cur < floor_gb * GIB )); then
+  die "free space on /scratch fell back under the ${floor_gb} GB floor"
+fi
+trigger="low disk (free=${free_gb}GB min_free=${floor_gb}GB)"
+[[ "$(ssm_last "grep -cF '${trigger}' /var/log/ebs-autoscale.log || true")" -ge 1 ]] \
+  || die "the daemon did not log '${trigger}'"
+
 log "terminating and checking for leaked volumes"
 aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null
 aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID"
@@ -306,4 +377,4 @@ leaked="$(aws ec2 describe-volumes --region "$REGION" \
 TERMINATED=1  # already terminated; keep cleanup from re-terminating
 [[ "$leaked" == "0" ]] || die "$leaked autoscale volume(s) leaked after termination"
 
-log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), folded a stray volume on restart, no leaks"
+log "PASS: grew from ${initial_size}B to ${grew}B (${initial_count} -> ${final_count} volumes), folded a stray volume on restart, grew ${new_gb} GB to clear a ${floor_gb} GB floor, no leaks"
