@@ -12,6 +12,11 @@ script_path() {
   printf '%s' "$SHELLSPEC_PROJECT_ROOT/$1"
 }
 
+# Contents of a file under spec/fixtures, e.g. fixture describe-volumes.json.
+fixture() {
+  cat "$SHELLSPEC_PROJECT_ROOT/spec/fixtures/$1"
+}
+
 # Skip guard: true (success) when jq is unavailable.
 no_jq() {
   ! command -v jq >/dev/null 2>&1

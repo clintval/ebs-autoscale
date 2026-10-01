@@ -1,0 +1,2 @@
+/dev/sdf /dev/nvme1n1
+/dev/sdg /dev/nvme2n1

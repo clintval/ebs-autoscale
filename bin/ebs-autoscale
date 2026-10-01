@@ -45,14 +45,19 @@ CREATE_VOLUME="${EBS_AUTOSCALE_HOME}/bin/create-ebs-volume"
 # autoscaled volume from one attached for other reasons.
 CREATION_TAG=amazon-ebs-autoscale-creation-time
 
+# describe_owned_volumes -> describe-volumes JSON for every volume this instance created.
+describe_owned_volumes() {
+    aws ec2 describe-volumes \
+        --region "$AWS_REGION" \
+        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
+        --output json 2>/dev/null
+}
+
 # get_autoscaled_usage -> "NUM_DEVICES AUTOSCALED_GB": attached autoscaled volumes and the
 # GB of every volume this instance created. Fails without output if EC2 cannot be queried.
 get_autoscaled_usage() {
     local response usage
-    response=$(aws ec2 describe-volumes \
-        --region "$AWS_REGION" \
-        --filters "Name=tag:source-instance,Values=${INSTANCE_ID}" \
-        --output json 2>/dev/null)
+    response=$(describe_owned_volumes)
     [ -n "$response" ] || return 1
     usage=$(printf '%s' "$response" | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" \
         '[([.Volumes[]
@@ -126,8 +131,8 @@ can_grow() {
     return 0
 }
 
-# lvresize to use the whole volume group, tolerating exit 5 (already at size)
-# and guarding against a hang on the LVM lock.
+# lvresize to use the whole volume group, guarding against a hang on the LVM lock.
+# LVM also exits 5 for a missing LV or VG, so 5 means already at size only with no free extents.
 lvresize_full() {
     local lv="$1"
     local i=1
@@ -135,7 +140,8 @@ lvresize_full() {
     while [ "$i" -le 3 ]; do
         timeout -k 6 60 lvresize -l 100%VG "$lv"
         status=$?
-        if [ "$status" -eq 0 ] || [ "$status" -eq 5 ]; then
+        [ "$status" -eq 0 ] && return 0
+        if [ "$status" -eq 5 ] && [ "$(vg_free_extents)" = 0 ]; then
             return 0
         fi
         logerr "lvresize failed (status ${status}), attempt ${i}/3"
@@ -161,6 +167,97 @@ grow_filesystem() {
             return 1
             ;;
     esac
+}
+
+# lvm_report CMD [ARG...]: run an LVM report command under the lvresize timeout, logging failures.
+lvm_report() {
+    local status=0
+    timeout -k 6 60 "$@" 2>>"$EBS_AUTOSCALE_LOG_FILE" || status=$?
+    [ "$status" -eq 0 ] || logerr "$1 failed (status ${status})"
+    return "$status"
+}
+
+# vg_free_extents -> the number of unallocated extents in the VG, empty if vgs fails.
+vg_free_extents() {
+    lvm_report vgs --noheadings -o vg_free_count "$LVM_VG" | tr -d ' '
+}
+
+# pv_table -> "DEVICE VG" for every PV, VG empty when in none; pvs reports EC2's /dev/sdX aliases.
+pv_table() {
+    local report pv vg
+    report=$(lvm_report pvs --noheadings -o pv_name,vg_name) || return 1
+    printf '%s\n' "$report" | while read -r pv vg; do
+        if [ -n "$pv" ]; then
+            printf '%s %s\n' "$(readlink -f "$pv")" "$vg"
+        fi
+    done
+}
+
+# disk_is_blank DEV -> 0 if DEV has no filesystem, partition table or partitions.
+disk_is_blank() {
+    lsblk -nro NAME,FSTYPE,PTTYPE "$1" 2>>"$EBS_AUTOSCALE_LOG_FILE" | awk 'END { exit !(NR == 1 && NF == 1) }'
+}
+
+# device_volume_id SERIALS DEV -> DEV's EBS volume ID from `lsblk -dno NAME,SERIAL` output,
+# asking ebsnvme-id only when DEV has no serial; empty for any other device.
+device_volume_id() {
+    local serial ebsnvme
+    serial=$(printf '%s\n' "$1" | awk -v name="${2#/dev/}" '$1 == name { print $2 }')
+    case "$serial" in
+        vol-*) printf '%s' "$serial" ;;
+        vol?*) printf 'vol-%s' "${serial#vol}" ;;
+        '')
+            ebsnvme=${EBSNVME:-$(command -v ebsnvme-id 2>/dev/null || echo /usr/sbin/ebsnvme-id)}
+            "$ebsnvme" -v "$2" 2>/dev/null | awk '/Volume ID:/ { print $3 }'
+            ;;
+    esac
+}
+
+# fold_stray_volumes: grow onto this instance's attached autoscaled volumes that are not in the VG,
+# if blank or a PV in no VG. Returns 0 if it folded any, 1 if there were none, 2 on failure.
+fold_stray_volumes() {
+    local response volume_ids pvs_table serials dev pv_vg id vol
+    local folded=1
+    response=$(describe_owned_volumes)
+    if [ -z "$response" ] || ! volume_ids=$(printf '%s' "$response" \
+        | jq -r --arg iid "$INSTANCE_ID" --arg tag "$CREATION_TAG" \
+            '.Volumes[]
+                | select(any(.Attachments[]?; .InstanceId == $iid and .State == "attached"))
+                | select(any(.Tags[]?; .Key == $tag))
+                | .VolumeId' 2>/dev/null); then
+        logerr "could not query EC2 for this instance's volumes"
+        return 2
+    fi
+    [ -n "$volume_ids" ] || return 1
+    pvs_table=$(pv_table) || return 2
+    if ! serials=$(lsblk -dno NAME,SERIAL 2>>"$EBS_AUTOSCALE_LOG_FILE"); then
+        logerr "lsblk failed to list device serials"
+        return 2
+    fi
+    for dev in $(_nvme_candidates); do
+        # Empty when DEV is not a PV, "-" when it is a PV in no VG.
+        pv_vg=$(printf '%s\n' "$pvs_table" | awk -v d="$dev" '$1 == d { print (NF > 1 ? $2 : "-") }')
+        [ "$pv_vg" = "$LVM_VG" ] && continue
+        id=$(device_volume_id "$serials" "$dev")
+        for vol in $volume_ids; do
+            [ -n "$id" ] && [ "$vol" = "$id" ] || continue
+            if [ -n "$pv_vg" ] && [ "$pv_vg" != - ]; then
+                logerr "not folding stray volume ${vol} (${dev}): it is in volume group ${pv_vg}"
+                break
+            elif [ -z "$pv_vg" ] && ! disk_is_blank "$dev"; then
+                logerr "not folding stray volume ${vol} (${dev}): it has a filesystem or partitions"
+                break
+            fi
+            loginfo "folding stray volume ${vol} (${dev}) into ${LVM_VG}"
+            if ! grow_filesystem "$dev"; then
+                logerr "failed to fold ${vol} (${dev}) into ${LVM_VG}"
+                return 2
+            fi
+            folded=0
+            break
+        done
+    done
+    return "$folded"
 }
 
 # add_space NUM_DEVICES AUTOSCALED_GB -> 0 grown, 2 at a growth limit, 1 failed.
@@ -210,6 +307,9 @@ GROW_RETRY_MAX_DELAY=300
 GROW_RETRY_DELAY=0
 NEXT_GROW_ATTEMPT=0
 
+# Set at startup and after a failed attempt, so strays are folded even under the threshold.
+RECONCILE_PENDING=1
+
 # Whole seconds of uptime, a monotonic clock that chrony cannot step.
 now_seconds() {
     local uptime
@@ -217,8 +317,8 @@ now_seconds() {
     printf '%s' "${uptime%.*}"
 }
 
-# attempt_grow PCT: refreshes NUM_DEVICES and THRESHOLD, then grows if PCT is still over it.
-# Returns 1 if skipped while backing off, else 0.
+# attempt_grow PCT: folds stray volumes, refreshes NUM_DEVICES and THRESHOLD, then grows
+# if PCT is still over it. Returns 1 if skipped while backing off, else 0.
 attempt_grow() {
     local pct="$1"
     local now
@@ -226,12 +326,20 @@ attempt_grow() {
     [ "$now" -ge "$NEXT_GROW_ATTEMPT" ] || return 1
 
     local usage autoscaled_gb
-    local status=0
-    if usage=$(get_autoscaled_usage); then
+    local status=0 fold=0
+    fold_stray_volumes || fold=$?
+    if [ "$fold" -eq 2 ]; then
+        status=1
+    elif usage=$(get_autoscaled_usage); then
         NUM_DEVICES=${usage% *}
         autoscaled_gb=${usage#* }
         THRESHOLD=$(calc_threshold "$NUM_DEVICES")
-        [ "$pct" -ge "$THRESHOLD" ] || return 0
+        # A fold grew the filesystem, so PCT is stale until the next tick.
+        [ "$fold" -ne 0 ] || GROW_RETRY_DELAY=0
+        if [ "$fold" -eq 0 ] || [ "$pct" -lt "$THRESHOLD" ]; then
+            RECONCILE_PENDING=0
+            return 0
+        fi
         loginfo "low disk (${pct}%)"
         add_space "$NUM_DEVICES" "$autoscaled_gb" || status=$?
     else
@@ -239,6 +347,7 @@ attempt_grow() {
         status=1
     fi
     now=$(now_seconds)
+    RECONCILE_PENDING=0
     case "$status" in
         0)
             NUM_DEVICES=$(( NUM_DEVICES + 1 ))
@@ -251,6 +360,7 @@ attempt_grow() {
             loginfo "growth limit reached; checking again in ${GROW_RETRY_MAX_DELAY}s"
             ;;
         *)
+            RECONCILE_PENDING=1
             if [ "$GROW_RETRY_DELAY" -eq 0 ]; then
                 GROW_RETRY_DELAY=$GROW_RETRY_MIN_DELAY
             else
@@ -285,8 +395,8 @@ run_daemon() {
         stats=$(read_fs_stats "$MOUNTPOINT")
         pct=$(printf '%s' "$stats" | awk '{print $4}')
 
-        if [ "${pct:-0}" -ge "$THRESHOLD" ]; then
-            if attempt_grow "$pct"; then
+        if [ "${pct:-0}" -ge "$THRESHOLD" ] || [ "$RECONCILE_PENDING" -eq 1 ]; then
+            if attempt_grow "${pct:-0}"; then
                 log_count="$LOG_INTERVAL"
             fi
         fi

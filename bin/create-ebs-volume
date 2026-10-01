@@ -101,35 +101,6 @@ get_next_logical_device() {
     return 1
 }
 
-# _nvme_candidates: print attached NVMe namespace devices, one per line.
-# Factored out (and overridable) so the resolver can be unit-tested.
-_nvme_candidates() {
-    local dev
-    for dev in /dev/nvme*n1; do
-        [ -b "$dev" ] && printf '%s\n' "$dev"
-    done
-}
-
-# match_nvme_device DEV VOLUME_ID SERIAL -> 0 if DEV is the block device for the
-# volume. Matches the kernel-reported NVMe serial first (no external tool), then
-# falls back to ebsnvme-id in both its legacy (-v) and subcommand (id -v) forms.
-# The ebsnvme-id binary can be overridden with EBSNVME for testing.
-match_nvme_device() {
-    local dev="$1"
-    local target_vol="$2"
-    local target_serial="$3"
-    local serial vid ebsnvme
-    serial=$(lsblk -dno SERIAL "$dev" 2>/dev/null)
-    if [ "$serial" = "$target_serial" ] || [ "$serial" = "$target_vol" ]; then
-        return 0
-    fi
-    ebsnvme=${EBSNVME:-$(command -v ebsnvme-id 2>/dev/null || echo /usr/sbin/ebsnvme-id)}
-    vid=$("$ebsnvme" -v "$dev" 2>>"$EBS_AUTOSCALE_LOG_FILE" \
-        || "$ebsnvme" id -v "$dev" 2>>"$EBS_AUTOSCALE_LOG_FILE")
-    vid=$(printf '%s' "$vid" | awk '/Volume ID:/{print $3}')
-    [ "$vid" = "$target_vol" ]
-}
-
 # resolve_nvme_device VOLUME_ID
 # Prints the real /dev/nvme*n1 path for an attached EBS volume, bounded so a
 # volume that never appears is a logged error rather than an infinite hang.
@@ -317,18 +288,7 @@ create_and_attach_volume() {
         error "could not attach volume ${volume_id}; deleted it"
     fi
 
-    # Resolve the real NVMe path for callers; the BDM name above is only what the
-    # EC2 API understands, not necessarily a device that exists on the instance.
-    local real_device
-    real_device=$(resolve_nvme_device "$volume_id") || true
-    if [ -z "$real_device" ]; then
-        error "could not resolve the NVMe device for volume ${volume_id}"
-    fi
-    loginfo "volume ${volume_id} present as ${real_device} (bdm ${bdm_device})"
-
-    # DeleteOnTermination must reference the BDM name, not the NVMe path. Retry
-    # a few times; if it still fails the volume is usable but may outlive the
-    # instance, so log loudly rather than aborting an otherwise-good attach.
+    # Keyed by BDM name and set before the device lookup so an unresolved volume cannot outlive the instance.
     if retry 5 aws ec2 modify-instance-attribute \
         --region "$region" \
         --instance-id "$instance_id" \
@@ -337,6 +297,15 @@ create_and_attach_volume() {
     else
         logerr "volume ${volume_id} DeleteOnTermination NOT enabled after retries; it may outlive the instance"
     fi
+
+    # Resolve the real NVMe path for callers; the BDM name above is only what the
+    # EC2 API understands, not necessarily a device that exists on the instance.
+    local real_device
+    real_device=$(resolve_nvme_device "$volume_id") || true
+    if [ -z "$real_device" ]; then
+        error "could not resolve the NVMe device for volume ${volume_id}"
+    fi
+    loginfo "volume ${volume_id} present as ${real_device} (bdm ${bdm_device})"
 
     printf '%s\n' "$real_device"
 }

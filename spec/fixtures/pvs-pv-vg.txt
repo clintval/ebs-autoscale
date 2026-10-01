@@ -1,0 +1,1 @@
+  /dev/sdf   autoscale_vg
