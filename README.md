@@ -72,7 +72,7 @@ runcmd:
   - systemctl stop docker || true
 
   # Install ebs-autoscale from a pinned release and mount /scratch as lvm.ext4.
-  - EBS_AUTOSCALE_VERSION=1.0.0
+  - EBS_AUTOSCALE_VERSION=1.1.0
   - mkdir -p /opt/ebs-autoscale
   - curl -sL "https://github.com/clintval/ebs-autoscale/archive/refs/tags/${EBS_AUTOSCALE_VERSION}.tar.gz" | tar xz --strip-components=1 -C /opt/ebs-autoscale
   - >-
