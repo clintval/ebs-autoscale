@@ -299,8 +299,8 @@ attempt_grow() {
         autoscaled_gb=${usage#* }
         THRESHOLD=$(calc_threshold "$NUM_DEVICES")
         # A fold grew the filesystem, so PCT is stale until the next tick.
+        [ "$fold" -ne 0 ] || GROW_RETRY_DELAY=0
         if [ "$fold" -eq 0 ] || [ "$pct" -lt "$THRESHOLD" ]; then
-            GROW_RETRY_DELAY=0
             RECONCILE_PENDING=0
             return 0
         fi

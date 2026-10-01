@@ -606,5 +606,31 @@ Describe 'bin/ebs-autoscale growth attempts'
       The status should equal 1
       The value "$(create_count)" should equal 3
     End
+
+    It 'keeps doubling the wait when usage dips under the threshold between failures'
+      create_errors
+      attempt_grow 95 2>/dev/null
+      NOW=1010; attempt_grow 10
+      When call attempt_grow 95
+      The stderr should include 'growing failed; next attempt in 20s'
+    End
+
+    It 'doubles the wait to 5 minutes while usage swings across the threshold'
+      create_errors
+      MOUNTPOINT="$SHELLSPEC_TMPBASE"; LOG_INTERVAL=1000000; DETECTION_INTERVAL=2
+      EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.swing.log"
+      : > "$EBS_AUTOSCALE_LOG_FILE"
+      # Usage is 60% and 40% in alternating minutes.
+      read_fs_stats() {
+        if [ $(( (NOW - 1000) / 60 % 2 )) -eq 0 ]; then echo '100 60 40 60'; else echo '100 40 60 40'; fi
+      }
+      sleep() { NOW=$(( NOW + DETECTION_INTERVAL )); [ "$NOW" -lt 1800 ] || exit 0; }
+      delays() {
+        (run_daemon 2>/dev/null)
+        grep -o 'next attempt in [0-9]*s' "$EBS_AUTOSCALE_LOG_FILE" | awk '{ print $4 }' | head -6 | tr '\n' ' '
+      }
+      When call delays
+      The output should equal '10s 20s 40s 80s 160s 300s '
+    End
   End
 End
