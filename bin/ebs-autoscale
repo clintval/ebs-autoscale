@@ -76,9 +76,7 @@ calc_threshold() {
     fi
 }
 
-# calc_new_size NUM_DEVICES AUTOSCALED_GB -> size in GB for the next volume, clamped
-# to the configured min/max and to the room left under the max logical volume size.
-# Larger volumes are used as the device count grows.
+# calc_new_size NUM_DEVICES AUTOSCALED_GB -> next volume's GB by device count, capped at the room left.
 calc_new_size() {
     local num_devices="$1"
     local autoscaled_gb="$2"
@@ -170,7 +168,9 @@ add_space() {
     local num_devices="$1"
     local autoscaled_gb="$2"
     if ! can_grow "$num_devices" "$autoscaled_gb"; then
-        loginfo "not growing: devices=${num_devices}/${MAX_EBS_VOLUME_COUNT} autoscaled=${autoscaled_gb}/${MAX_LOGICAL_VOLUME_SIZE}GB"
+        local limits="devices=${num_devices}/${MAX_EBS_VOLUME_COUNT} autoscaled=${autoscaled_gb}/${MAX_LOGICAL_VOLUME_SIZE}GB"
+        [ $(( autoscaled_gb + MIN_EBS_VOLUME_SIZE )) -le "$MAX_LOGICAL_VOLUME_SIZE" ] || limits="${limits} min=${MIN_EBS_VOLUME_SIZE}GB"
+        loginfo "not growing: ${limits}"
         return 2
     fi
     local vol_size device

@@ -191,6 +191,27 @@ Describe 'bin/ebs-autoscale growth attempts'
       The status should be success
       The contents of file "$CREATES" should include '--max-total-created-size 8000'
     End
+
+    Describe 'the log line when not growing'
+      fresh_log() {
+        EBS_AUTOSCALE_LOG_FILE="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.log"
+        : > "$EBS_AUTOSCALE_LOG_FILE"
+      }
+      Before 'fresh_log'
+
+      It 'names the minimum volume size when too little is left for it'
+        When call add_space 11 7900
+        The status should equal 2
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'autoscaled=7900/8000GB min=150GB'
+      End
+
+      It 'leaves the minimum out when the device count stops growth'
+        When call add_space 16 100
+        The status should equal 2
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'devices=16/16'
+        The contents of file "$EBS_AUTOSCALE_LOG_FILE" should not include 'min='
+      End
+    End
   End
 
   Describe 'after a successful grow'
