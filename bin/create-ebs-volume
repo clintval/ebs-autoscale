@@ -30,6 +30,7 @@
 
 # Creates one EBS volume, attaches it to this instance, enables
 # DeleteOnTermination, and prints the resulting block device path on stdout.
+# Exits 3 when a limit forbids another volume and 1 on any other failure.
 # Targets Amazon Linux 2023 on Nitro, where attached volumes appear as
 # /dev/nvme*n1 rather than at the /dev/sd* name passed to attach-volume.
 
@@ -64,12 +65,16 @@ Options
     --max-created-volumes N
                         Max number of volumes created by this instance.
                         (Default: --max-attached-volumes)
+
+Exit status
+
+    0 on success, 3 when a limit forbids another volume, 1 on any other failure.
 USAGE_EOF
 )
 
 error() {
     logerr "$1"
-    exit 1
+    exit "${2:-1}"
 }
 
 # get_next_logical_device CLAIMED
@@ -227,11 +232,12 @@ create_and_attach_volume() {
     # volumes it created, so the source-instance set is a superset of what is
     # attached. The AWS CLI's adaptive retry (set in initialize) handles throttling.
     local owned
-    owned=$(aws ec2 describe-volumes \
+    if ! owned=$(aws ec2 describe-volumes \
         --region "$region" \
         --filters "Name=tag:source-instance,Values=${instance_id}" \
-        --output json 2>/dev/null)
-    [ -n "$owned" ] || owned='{"Volumes":[]}'
+        --output json 2>/dev/null) || [ -z "$owned" ]; then
+        error "could not query EC2 for this instance's volumes"
+    fi
 
     local created_count total_created_size attached_count claimed_devices
     created_count=$(printf '%s' "$owned" | jq '.Volumes | length')
@@ -242,19 +248,19 @@ create_and_attach_volume() {
         '.Volumes[].Attachments[]? | select(.InstanceId == $iid) | .Device')
 
     if [ "$total_created_size" -ge "$MAX_LOGICAL_VOLUME_SIZE" ]; then
-        error "maximum total EBS volume size reached (${MAX_LOGICAL_VOLUME_SIZE} GB)"
+        error "maximum total EBS volume size reached (${MAX_LOGICAL_VOLUME_SIZE} GB)" 3
     fi
     if [ "$created_count" -ge "$MAX_CREATED_VOLUMES" ]; then
-        error "maximum number of created volumes reached (${MAX_CREATED_VOLUMES})"
+        error "maximum number of created volumes reached (${MAX_CREATED_VOLUMES})" 3
     fi
     if [ "$attached_count" -ge "$MAX_ATTACHED_VOLUMES" ]; then
-        error "maximum number of attached volumes reached (${MAX_ATTACHED_VOLUMES})"
+        error "maximum number of attached volumes reached (${MAX_ATTACHED_VOLUMES})" 3
     fi
 
     local bdm_device
     bdm_device=$(get_next_logical_device "$claimed_devices")
     if [ -z "$bdm_device" ]; then
-        error "no device names available for a new volume"
+        error "no device names available for a new volume" 3
     fi
     loginfo "next available device name: ${bdm_device}"
 
@@ -346,7 +352,7 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
     ENCRYPTED=$(get_config_value .volume.encrypted)
     MAX_LOGICAL_VOLUME_SIZE=$(get_config_value .limits.max_logical_volume_size)
     MAX_ATTACHED_VOLUMES=$(get_config_value .limits.max_ebs_volume_count)
-    MAX_CREATED_VOLUMES=$MAX_ATTACHED_VOLUMES
+    MAX_CREATED_VOLUMES=""
     SIZE=""
 
     while [ "$#" -gt 0 ]; do
@@ -364,6 +370,7 @@ if [ -z "${SHELLSPEC_VERSION:-}" ]; then
             *)                          error "unexpected argument $1" ;;
         esac
     done
+    : "${MAX_CREATED_VOLUMES:=$MAX_ATTACHED_VOLUMES}"
 
     if [ -z "$SIZE" ]; then
         echo "$USAGE" >&2

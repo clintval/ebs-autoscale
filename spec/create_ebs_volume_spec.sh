@@ -83,7 +83,7 @@ Describe 'bin/create-ebs-volume volume creation'
     It 'deletes the volume when it enters the error state'
       VOLUME_STATE=error
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The contents of file "$CALLS" should include 'delete-volume'
       The stderr should include 'did not become available'
     End
@@ -92,7 +92,7 @@ Describe 'bin/create-ebs-volume volume creation'
       VOLUME_STATE=creating
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The contents of file "$CALLS" should include 'delete-volume'
     End
@@ -102,17 +102,73 @@ Describe 'bin/create-ebs-volume volume creation'
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
       DELETE_RC=1
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The stderr should include 'could not be deleted'
       The stderr should include 'IncorrectState'
       The stderr should not include 'deleted it'
+    End
+
+    # A reached limit exits 3 so callers can tell it from a failure.
+    It 'exits 3 without creating a volume at the total created size limit'
+      MAX_LOGICAL_VOLUME_SIZE=0
+      When run create_and_attach_volume
+      The status should equal 3
+      The stderr should include 'maximum total EBS volume size'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'exits 3 without creating a volume at the created volume limit'
+      MAX_CREATED_VOLUMES=0
+      When run create_and_attach_volume
+      The status should equal 3
+      The stderr should include 'maximum number of created volumes'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'exits 3 without creating a volume at the attached volume limit'
+      MAX_ATTACHED_VOLUMES=0
+      When run create_and_attach_volume
+      The status should equal 3
+      The stderr should include 'maximum number of attached volumes'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'exits 3 without creating a volume when no device names are free'
+      get_next_logical_device() { return 1; }
+      When run create_and_attach_volume
+      The status should equal 3
+      The stderr should include 'no device names available'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    Describe 'when describe-volumes'
+      Parameters
+        fails 254
+        'returns nothing' 0
+      End
+
+      It "$1 exits 1 without creating a volume"
+        DESCRIBE_RC=$2
+        aws() {
+          printf '%s\n' "$*" >> "$CALLS"
+          case "$*" in
+            *describe-volumes*--filters*) return "$DESCRIBE_RC" ;;
+            *describe-volumes*)           echo available ;;
+            *create-volume*)              echo '{"VolumeId":"vol-0abc"}' ;;
+          esac
+        }
+        When run create_and_attach_volume
+        The status should equal 1
+        The stderr should include 'could not query EC2'
+        The contents of file "$CALLS" should not include 'create-volume'
+      End
     End
 
     # A failed attach must also delete the just-created volume.
     It 'deletes the volume when the attach fails'
       ATTACH_RC=1
       When run create_and_attach_volume
-      The status should be failure
+      The status should equal 1
       The stdout should equal ""
       The stderr should include 'could not attach'
       The contents of file "$CALLS" should include 'delete-volume'
@@ -161,7 +217,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=2
       FINAL_STATE=error
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'state error'
       The contents of file "$POLLS" should eq "$(printf 'poll\npoll')"
     End
@@ -169,14 +225,14 @@ Describe 'bin/create-ebs-volume volume creation'
     It 'fails immediately when the volume is being deleted'
       FINAL_STATE=deleting
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'state deleting'
     End
 
     It 'fails immediately when the volume has been deleted'
       FINAL_STATE=deleted
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'state deleted'
     End
 
@@ -187,7 +243,7 @@ Describe 'bin/create-ebs-volume volume creation'
         return 254
       }
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'could not describe volume vol-0abc'
       The contents of file "$POLLS" should equal poll
       The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'UnauthorizedOperation'
@@ -207,7 +263,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=1000
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The value "$(awk 'END { print (NR < 15) ? "bounded" : "unbounded" }' "$POLLS")" should equal bounded
     End
@@ -215,7 +271,7 @@ Describe 'bin/create-ebs-volume volume creation'
     It 'waits up to 600 seconds by default'
       READY_ON_POLL=100000
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The value "$(awk '{ t += $1 } END { print (t >= 600 && t < 606.25) ? "600 s" : t }' "$SLEEPS")" should equal "600 s"
     End
@@ -224,7 +280,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=1000
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=20
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The value "$(( $(wc -l < "$POLLS") - $(wc -l < "$SLEEPS") ))" should equal 1
     End
@@ -233,7 +289,7 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=1000
       EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT=0
       When call wait_for_volume_available vol-0abc
-      The status should be failure
+      The status should equal 1
       The stderr should include 'timed out'
       The contents of file "$POLLS" should equal poll
       The contents of file "$SLEEPS" should equal ""
@@ -256,6 +312,58 @@ Describe 'bin/create-ebs-volume volume creation'
       READY_ON_POLL=40
       When call wait_for_volume_available vol-0abc
       The value "$(awk '$1 > 6.25 { over++ } $1 == 5 { pinned++ } END { print (over + 0 == 0 && pinned + 0 < 5) ? "spread" : "over=" over + 0 " pinned=" pinned + 0 }' "$SLEEPS")" should equal spread
+    End
+  End
+
+  Describe 'command line'
+    # Stub curl and aws for an instance that has created 16 detached volumes;
+    # create-volume fails, so a run that gets past the limits exits 1.
+    # shellcheck disable=SC2016
+    setup() {
+      STUB_DIR="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.cli-bin"
+      CFG="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.cli-config.json"
+      CALLS="${SHELLSPEC_TMPBASE}/${SHELLSPEC_SPECFILE##*/}.cli-aws-calls"
+      mkdir -p "$STUB_DIR"
+      : > "$CALLS"
+      export CALLS
+      echo '{"volume": {"type": "gp3", "iops": 3000, "throughput": 125, "encrypted": 1},
+        "limits": {"max_logical_volume_size": 8000, "max_ebs_volume_count": 16}}' > "$CFG"
+      printf '%s\n' '#!/bin/sh' 'case "$*" in' \
+        '  *api/token*) echo token ;;' \
+        '  *availability-zone*) echo us-west-2a ;;' \
+        '  *instance-id*) echo i-0123 ;;' \
+        'esac' > "$STUB_DIR/curl"
+      printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> "$CALLS"' 'case "$*" in' \
+        "  *describe-volumes*) jq -nc '{Volumes: [range(16) | {Size: 10, Attachments: []}]}' ;;" \
+        '  *) exit 1 ;;' \
+        'esac' > "$STUB_DIR/aws"
+      chmod +x "$STUB_DIR/curl" "$STUB_DIR/aws"
+    }
+    Before 'setup'
+
+    create_ebs_volume() {
+      env -u SHELLSPEC_VERSION PATH="$STUB_DIR:$PATH" EBS_AUTOSCALE_CONFIG_FILE="$CFG" \
+        sh "$(script_path bin/create-ebs-volume)" "$@"
+    }
+
+    It 'defaults the created volume limit to --max-attached-volumes'
+      When run create_ebs_volume --size 100 --max-attached-volumes 32
+      The status should equal 1
+      The stderr should include 'could not create volume'
+      The contents of file "$CALLS" should include 'create-volume'
+    End
+
+    It 'stops at an explicit --max-created-volumes'
+      When run create_ebs_volume --size 100 --max-created-volumes 16 --max-attached-volumes 32
+      The status should equal 3
+      The stderr should include 'maximum number of created volumes reached (16)'
+      The contents of file "$CALLS" should not include 'create-volume'
+    End
+
+    It 'documents its exit statuses in --help'
+      When run create_ebs_volume --help
+      The status should be success
+      The output should include '0 on success, 3 when a limit forbids another volume, 1 on any other failure.'
     End
   End
 End
