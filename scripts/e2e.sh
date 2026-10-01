@@ -8,7 +8,8 @@
 # tagged volume outside the volume group, restarts the daemon, and asserts the
 # volume is folded in without another being created. It then sets a
 # min_free_space floor over the free space at low utilization and asserts one
-# volume sized to the shortfall lifts free space over it. Finally it terminates the
+# volume, padded 8% over the shortfall, lifts free space over it while ext4 keeps
+# part of it, so an exact-shortfall volume would fall short. Finally it terminates the
 # instance and asserts that no autoscale volume was left behind, which is the
 # real test of the DeleteOnTermination handling. Every resource is ephemeral
 # and torn down on exit.
@@ -24,7 +25,7 @@
 # Environment overrides:
 #   AWS_REGION          Region to run in (default: your profile's, else us-west-2)
 #   E2E_INSTANCE_TYPE   Instance type (default: m5.large)
-#   E2E_INITIAL_GB      Initial scratch volume size in GB (default: 10, at most 12)
+#   E2E_INITIAL_GB      Initial scratch volume size in GB (default: 10)
 #   E2E_KEEP            If set, skip teardown so you can inspect the instance
 #   E2E_BUCKET          Reuse this S3 bucket instead of creating a throwaway one
 
@@ -49,11 +50,6 @@ RUN_ID="ebs-autoscale-e2e-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 
 log() { printf '[e2e] %s\n' "$*" >&2; }
 die() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit 1; }
-
-# Past 12 GB, ext4's ~7% overhead keeps the free-space phase's one E2E_INITIAL_GB + 1 volume from clearing its floor.
-if ! [[ "$INITIAL_GB" =~ ^[0-9]+$ ]] || (( INITIAL_GB > 12 )); then
-  die "E2E_INITIAL_GB must be a whole number no larger than 12"
-fi
 
 # Populated as resources are created; cleanup tears them down in reverse.
 INSTANCE_ID=""
@@ -321,36 +317,37 @@ sleep 20
 log "stopping the daemon to switch it to free-space mode"
 ssm_run 'systemctl stop ebs-autoscale' >/dev/null
 ladder_gb="$(ssm_last 'jq -r .limits.min_ebs_volume_size /etc/ebs-autoscale.json')"
-max_gb="$(ssm_last 'jq -r .limits.max_ebs_volume_size /etc/ebs-autoscale.json')"
 threshold="$(ssm_last 'jq -r .limits.initial_utilization_threshold /etc/ebs-autoscale.json')"
-[[ "$ladder_gb" =~ ^[0-9]+$ && "$max_gb" =~ ^[0-9]+$ && "$threshold" =~ ^[0-9]+$ ]] \
-  || die "could not read the volume sizes and threshold from /etc/ebs-autoscale.json"
-[[ "$stray_count" -le 3 ]] || die "the free-space phase needs at most 3 owned volumes to keep the ${ladder_gb} GB ladder size, got ${stray_count}"
-shortfall_gb=$(( (ladder_gb > max_gb ? ladder_gb : max_gb) + 1 ))
+[[ "$ladder_gb" =~ ^[0-9]+$ && "$threshold" =~ ^[0-9]+$ ]] \
+  || die "could not read min_ebs_volume_size and the threshold from /etc/ebs-autoscale.json"
+# From 4 devices the ladder size becomes max_ebs_volume_size, which would mask the padded shortfall.
+[[ "$stray_count" -le 3 ]] || die "the free-space phase needs at most 3 owned volumes, got ${stray_count}"
 before_ids="$(owned_volumes | awk '{ printf "%s ", $1 }')" || die "could not list the owned volumes"
-avail="$(ssm_last 'df -B1 --output=avail /scratch | tail -n1 | tr -d " "')"
-[[ "$avail" =~ ^[0-9]+$ ]] || die "could not read the free space on /scratch (got '${avail}')"
-# Ext4 keeps about 7% of a new volume, so free space sits 32 MiB under a whole GiB for one grow to clear the floor.
-ssm_run "fallocate -l $(( avail % GIB + 32 * 1024 * 1024 )) /scratch/e2e.floor" >/dev/null
-read -r avail pct <<<"$(ssm_last 'df -B1 --output=avail,pcent /scratch | tail -n1 | tr -d "%"')"
-[[ "$avail" =~ ^[0-9]+$ && "$pct" =~ ^[0-9]+$ ]] || die "could not read /scratch after the fill (got '${avail} ${pct}')"
+read -r avail_before pct <<<"$(ssm_last 'df -B1 --output=avail,pcent /scratch | tail -n1 | tr -d "%"')"
+[[ "$avail_before" =~ ^[0-9]+$ && "$pct" =~ ^[0-9]+$ ]] || die "could not read /scratch (got '${avail_before} ${pct}')"
 (( pct < threshold )) || die "utilization ${pct}% is not under the ${threshold}% threshold, so only the floor may trigger"
-free_gb=$(( avail / GIB ))
+free_gb=$(( avail_before / GIB ))
+shortfall_gb=26
+padded_gb=$(( (shortfall_gb * 108 + 99) / 100 ))
 floor_gb=$(( free_gb + shortfall_gb ))
-ssm_run "jq --arg f ${floor_gb} --arg m $(( max_gb * 4 )) '.limits.min_free_space = \$f | .limits.max_ebs_volume_size = \$m' /etc/ebs-autoscale.json > /tmp/ebs-autoscale.json && cat /tmp/ebs-autoscale.json > /etc/ebs-autoscale.json" >/dev/null
+ssm_run "jq --arg f ${floor_gb} --arg m 40 '.limits.min_free_space = \$f | .limits.max_ebs_volume_size = \$m' /etc/ebs-autoscale.json > /tmp/ebs-autoscale.json && cat /tmp/ebs-autoscale.json > /etc/ebs-autoscale.json" >/dev/null
 [[ "$(ssm_last 'jq -r .limits.min_free_space /etc/ebs-autoscale.json')" == "$floor_gb" ]] \
   || die "could not set min_free_space in /etc/ebs-autoscale.json"
+finished_before="$(ssm_last "grep -c 'finished extending' /var/log/ebs-autoscale.log || true")"
+[[ "$finished_before" =~ ^[0-9]+$ ]] || die "could not read /var/log/ebs-autoscale.log (got '${finished_before}')"
 
 log "restarting the daemon with a ${floor_gb} GB floor over ${free_gb} GB free at ${pct}% utilization"
 ssm_run 'systemctl start ebs-autoscale' >/dev/null
-lifted=""
+grown=""
 for ((i = 0; i < 36; i++)); do
-  cur="$(ssm_last 'df -B1 --output=avail /scratch | tail -n1 | tr -d " "')"
-  if [[ "$cur" =~ ^[0-9]+$ ]] && (( cur >= floor_gb * GIB )); then lifted="$cur"; break; fi
+  finished="$(ssm_last "grep -c 'finished extending' /var/log/ebs-autoscale.log || true")"
+  if [[ "$finished" =~ ^[0-9]+$ ]] && (( finished > finished_before )); then grown=1; break; fi
   sleep 5
 done
-[[ -n "$lifted" ]] || die "free space on /scratch did not rise over the ${floor_gb} GB floor"
-log "free space lifted to $(( lifted / GIB )) GB; waiting to confirm no extra volume is created"
+[[ -n "$grown" ]] || die "the daemon did not finish a free-space grow"
+avail_after="$(ssm_last 'df -B1 --output=avail /scratch | tail -n1 | tr -d " "')"
+[[ "$avail_after" =~ ^[0-9]+$ ]] || die "could not read /scratch after the grow (got '${avail_after}')"
+log "grew; waiting to confirm no extra volume is created"
 sleep 20
 new_vols="$(owned_volumes | awk -v before="$before_ids" \
   'BEGIN { n = split(before, ids); for (i = 1; i <= n; i++) seen[ids[i]] = 1 } NF && !($1 in seen)')" \
@@ -358,12 +355,14 @@ new_vols="$(owned_volumes | awk -v before="$before_ids" \
 [[ "$(printf '%s\n' "$new_vols" | awk 'NF' | wc -l | tr -d ' ')" -eq 1 ]] \
   || die "expected one new owned volume in free-space mode, got: $(printf '%s' "$new_vols" | tr '\n\t' '; ')"
 new_gb="$(printf '%s\n' "$new_vols" | awk 'NF { print $2 }')"
-[[ "$new_gb" == "$shortfall_gb" ]] \
-  || die "expected the new volume to cover the ${shortfall_gb} GB shortfall rather than the ${ladder_gb} GB ladder size, got ${new_gb} GB"
-cur="$(ssm_last 'df -B1 --output=avail /scratch | tail -n1 | tr -d " "')"
-if ! [[ "$cur" =~ ^[0-9]+$ ]] || (( cur < floor_gb * GIB )); then
-  die "free space on /scratch fell back under the ${floor_gb} GB floor"
-fi
+[[ "$new_gb" == "$padded_gb" ]] \
+  || die "expected the new volume to be the ${padded_gb} GB padded shortfall rather than the ${ladder_gb} GB ladder size, got ${new_gb} GB"
+gain=$(( avail_after - avail_before ))
+(( gain < new_gb * GIB )) || die "all ${new_gb} GB of the new volume became free space, so an exact-shortfall volume would not fall short"
+(( avail_after >= floor_gb * GIB )) \
+  || die "the ${new_gb} GB padded grow left free space $(( (floor_gb * GIB - avail_after) / 1048576 )) MiB under the ${floor_gb} GB floor"
+log "$(awk -v g="$gain" -v v="$(( new_gb * GIB ))" -v s="$shortfall_gb" -v m="$(( avail_after - floor_gb * GIB ))" -v gib="$GIB" \
+  'BEGIN { f = g / v; printf "usable fraction %.3f: an exact %d GB volume would fall %.2f GB short; the pad cleared the floor by %.2f GB", f, s, s * (1 - f), m / gib }')"
 trigger="low disk (free=${free_gb}GB min_free=${floor_gb}GB)"
 [[ "$(ssm_last "grep -cF '${trigger}' /var/log/ebs-autoscale.log || true")" -ge 1 ]] \
   || die "the daemon did not log '${trigger}'"
