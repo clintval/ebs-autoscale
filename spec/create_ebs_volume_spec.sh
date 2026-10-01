@@ -180,6 +180,19 @@ Describe 'bin/create-ebs-volume volume creation'
       The stderr should include 'state deleted'
     End
 
+    It 'fails at once when describe-volumes errors'
+      aws() {
+        echo poll >> "$POLLS"
+        echo 'An error occurred (UnauthorizedOperation)' >&2
+        return 254
+      }
+      When call wait_for_volume_available vol-0abc
+      The status should be failure
+      The stderr should include 'could not describe volume vol-0abc'
+      The contents of file "$POLLS" should equal poll
+      The contents of file "$EBS_AUTOSCALE_LOG_FILE" should include 'UnauthorizedOperation'
+    End
+
     It 'keeps polling when describe-volumes returns nothing'
       aws() {
         echo poll >> "$POLLS"

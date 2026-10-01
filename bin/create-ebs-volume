@@ -182,8 +182,8 @@ jittered_ms() {
 
 # wait_for_volume_available VOLUME_ID
 # Polls with jittered backoff (1 s, x1.5, 5 s cap) until the volume is available.
-# Fails on error/deleting/deleted or after EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT
-# seconds of sleep (default 600).
+# Fails on a describe error, on error/deleting/deleted, or after
+# EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT seconds of sleep (default 600).
 wait_for_volume_available() {
     local volume_id="$1"
     local timeout_ms=$(( ${EBS_AUTOSCALE_VOLUME_AVAILABLE_TIMEOUT:-600} * 1000 ))
@@ -192,11 +192,14 @@ wait_for_volume_available() {
     local elapsed_ms=0
     local sleep_ms state
     while :; do
-        state=$(aws ec2 describe-volumes \
+        if ! state=$(aws ec2 describe-volumes \
             --region "$AWS_REGION" \
             --volume-ids "$volume_id" \
             --query 'Volumes[0].State' \
-            --output text 2>/dev/null)
+            --output text 2>>"$EBS_AUTOSCALE_LOG_FILE"); then
+            logerr "could not describe volume ${volume_id}"
+            return 1
+        fi
         case "$state" in
             available) return 0 ;;
             error|deleting|deleted)
