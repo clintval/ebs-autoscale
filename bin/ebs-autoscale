@@ -407,9 +407,9 @@ run_daemon() {
 
     while true; do
         stats=$(read_fs_stats "$MOUNTPOINT")
-        read -r _ _ avail_bytes pct <<STATS_EOF
-$stats
-STATS_EOF
+        # shellcheck disable=SC2086
+        { set -f; set -- $stats; set +f; }
+        avail_bytes=${3:-}; pct=${4:-}
 
         if space_is_low "$avail_bytes" "$pct" || [ "$RECONCILE_PENDING" -eq 1 ]; then
             if attempt_grow "${pct:-0}" "$avail_bytes"; then
