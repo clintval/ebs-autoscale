@@ -9,7 +9,7 @@
 # restarts the daemon, and asserts the volume is folded in and its
 # DeleteOnTermination repaired without another being created. It then sets a
 # min_free_space floor over the free space at low utilization and asserts one
-# volume, padded 8% over the shortfall, lifts free space over it while ext4 keeps
+# volume, padded 3% over the shortfall, lifts free space over it while ext4 keeps
 # part of it, so an exact-shortfall volume would fall short. Finally it terminates the
 # instance and asserts that no autoscale volume was left behind, which is the
 # real test of the DeleteOnTermination handling. Every resource is ephemeral
@@ -369,7 +369,7 @@ read -r avail_before pct <<<"$(ssm_last 'df -B1 --output=avail,pcent /scratch | 
 (( pct < threshold )) || die "utilization ${pct}% is not under the ${threshold}% threshold, so only the floor may trigger"
 free_gb=$(( avail_before / GIB ))
 shortfall_gb=26
-padded_gb=$(( (shortfall_gb * 108 + 99) / 100 ))
+padded_gb=$(( (shortfall_gb * 103 + 99) / 100 ))
 floor_gb=$(( free_gb + shortfall_gb ))
 ssm_run "jq --arg f ${floor_gb} --arg m 40 '.limits.min_free_space = \$f | .limits.max_ebs_volume_size = \$m' /etc/ebs-autoscale.json > /tmp/ebs-autoscale.json && cat /tmp/ebs-autoscale.json > /etc/ebs-autoscale.json" >/dev/null
 [[ "$(ssm_last 'jq -r .limits.min_free_space /etc/ebs-autoscale.json')" == "$floor_gb" ]] \

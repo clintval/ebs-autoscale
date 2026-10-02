@@ -111,8 +111,8 @@ calc_new_size() {
         new_size="$MAX_EBS_VOLUME_SIZE"
     fi
     if [ "$shortfall_gb" -gt 0 ]; then
-        # Pad by 8%: ext4 keeps about 6.6% of each new volume (5% reserved blocks plus inode tables), which df's free space excludes.
-        [ "$shortfall_gb" -ge "$MAX_EBS_VOLUME_SIZE" ] || shortfall_gb=$(( (shortfall_gb * 108 + 99) / 100 ))
+        # Pad by 3%: ext4 inode tables take about 1.6% of each new volume, which df's free space excludes.
+        [ "$shortfall_gb" -ge "$MAX_EBS_VOLUME_SIZE" ] || shortfall_gb=$(( (shortfall_gb * 103 + 99) / 100 ))
         if [ "$shortfall_gb" -gt "$new_size" ]; then
             new_size="$shortfall_gb"
             [ "$new_size" -le "$MAX_EBS_VOLUME_SIZE" ] || new_size="$MAX_EBS_VOLUME_SIZE"
