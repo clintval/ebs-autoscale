@@ -207,13 +207,13 @@ if [ -z "$DEVICE" ] || [ ! -b "$DEVICE" ]; then
     DEVICE=$("${PREFIX}/bin/create-ebs-volume" --size "$SIZE" --type "$VOLUMETYPE")
 fi
 
-# Build the lvm.ext4 filesystem and mount it.
+# Build the lvm.ext4 filesystem with no root reserve, which on scratch only hides free space, and mount it.
 VG=$(get_config_value .lvm.volume_group)
 LV=$(get_config_value .lvm.logical_volume)
 pvcreate "$DEVICE"
 vgcreate "$VG" "$DEVICE"
 lvcreate "$VG" -n "$LV" -l 100%VG
-mkfs.ext4 "/dev/mapper/${VG}-${LV}"
+mkfs.ext4 -m 0 "/dev/mapper/${VG}-${LV}"
 mount "/dev/mapper/${VG}-${LV}" "$MOUNTPOINT"
 printf '/dev/mapper/%s-%s\t%s\text4\tdefaults\t0\t0\n' "$VG" "$LV" "$MOUNTPOINT" | tee -a /etc/fstab
 

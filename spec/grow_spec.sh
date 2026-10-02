@@ -358,11 +358,11 @@ Describe 'bin/ebs-autoscale growth attempts'
       Before 'record_create_args'
       requested_sizes() { sed -n 's/.*--size \([0-9]*\).*/\1/p' "$CREATES"; }
 
-      It 'covers the shortfall padded by 8% in one grow rather than the ladder size'
+      It 'covers the shortfall padded by 3% in one grow rather than the ladder size'
         MIN_FREE_SPACE=1000; set_volumes 1 300
         When call attempt_grow 1 $(( 300 * BYTES_PER_GB ))
         The status should be success
-        The result of function requested_sizes should equal 756
+        The result of function requested_sizes should equal 721
       End
 
       It 'uses the ladder size when the shortfall is smaller'
