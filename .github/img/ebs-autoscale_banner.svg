@@ -1,0 +1,111 @@
+<svg width="1200" height="300" viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ebs-autoscale: a storage drum on its side labeled nvme1n1 300G is 80% full at a threshold set with --initial-utilization-threshold 80, a new 150G EBS volume nvme2n1 slides in from the right to join it, and a log printout reads low disk, extending /scratch by 150GB, adding /dev/nvme2n1 to the logical volume, finished extending /scratch">
+<defs>
+<pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" stroke="#75908c" stroke-width="1.1"/></pattern>
+</defs>
+<rect width="1200" height="300" fill="#dcebfa"/>
+<g font-family="Georgia, 'Times New Roman', serif" fill="#26443a">
+<text x="96" y="150" font-size="68" letter-spacing="1">ebs-autoscale</text>
+<path d="M102,186 Q317,178 532,184" fill="none" stroke="#26443a" stroke-width="1.6" stroke-linecap="round"/>
+<text x="317" y="216" text-anchor="middle" font-size="19" font-style="italic" fill="#4c6d63">Never run out of scratch.</text>
+</g>
+<path d="M608,106 L734,106 A12,48 0 0 1 734,202 L608,202 A12,48 0 0 1 608,106 Z" fill="url(#hatch)" stroke="#26443a" stroke-width="0" stroke-linejoin="round" transform="translate(7 9)"/>
+<path d="M608,106 L734,106 A12,48 0 0 1 734,202 L608,202 A12,48 0 0 1 608,106 Z" fill="#f4f8fc" stroke="#26443a" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M608,106 L708.8,106 A12,48 0 0 1 708.8,202 L608,202 A12,48 0 0 1 608,106 Z" fill="#4f7a6a"/>
+<ellipse cx="708.8" cy="154" rx="12" ry="48" fill="#4f7a6a"/>
+<ellipse cx="708.8" cy="154" rx="12" ry="48" fill="#f4f8fc" opacity="0.38"/>
+<ellipse cx="708.8" cy="154" rx="12" ry="48" fill="none" stroke="#26443a" stroke-width="1.3"/>
+<circle cx="688.8" cy="128" r="2.2" fill="none" stroke="#f4f8fc" stroke-width="1" opacity="0.8"/>
+<circle cx="680.8" cy="134" r="1.4" fill="none" stroke="#f4f8fc" stroke-width="1" opacity="0.8"/>
+<circle cx="690.8" cy="181" r="1.8" fill="none" stroke="#f4f8fc" stroke-width="1" opacity="0.8"/>
+<circle cx="681.8" cy="176" r="1.2" fill="none" stroke="#f4f8fc" stroke-width="1" opacity="0.8"/>
+<path d="M608,106 L734,106 A12,48 0 0 1 734,202 L608,202 A12,48 0 0 1 608,106 Z" fill="none" stroke="#26443a" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M617,106 A12,48 0 0 1 617,202" fill="none" stroke="#26443a" stroke-width="1.2"/>
+<circle cx="616.6" cy="108.9" r="1.2" fill="#26443a"/>
+<circle cx="620.7" cy="119.1" r="1.2" fill="#26443a"/>
+<circle cx="623.5" cy="135" r="1.2" fill="#26443a"/>
+<circle cx="624.5" cy="154" r="1.2" fill="#26443a"/>
+<circle cx="623.5" cy="173" r="1.2" fill="#26443a"/>
+<circle cx="620.7" cy="188.9" r="1.2" fill="#26443a"/>
+<circle cx="616.6" cy="199.1" r="1.2" fill="#26443a"/>
+<path d="M728,106 A12,48 0 0 1 728,202" fill="none" stroke="#26443a" stroke-width="1.2"/>
+<circle cx="727.6" cy="108.9" r="1.2" fill="#26443a"/>
+<circle cx="731.7" cy="119.1" r="1.2" fill="#26443a"/>
+<circle cx="734.5" cy="135" r="1.2" fill="#26443a"/>
+<circle cx="735.5" cy="154" r="1.2" fill="#26443a"/>
+<circle cx="734.5" cy="173" r="1.2" fill="#26443a"/>
+<circle cx="731.7" cy="188.9" r="1.2" fill="#26443a"/>
+<circle cx="727.6" cy="199.1" r="1.2" fill="#26443a"/>
+<ellipse cx="734" cy="154" rx="12" ry="48" fill="#f4f8fc" stroke="#26443a" stroke-width="2.2"/>
+<ellipse cx="734" cy="154" rx="7.4" ry="29.8" fill="none" stroke="#75908c" stroke-width="0.9"/>
+<ellipse cx="734" cy="154" rx="4.3" ry="17.3" fill="none" stroke="#75908c" stroke-width="0.9"/>
+<ellipse cx="734" cy="154" rx="2.4" ry="8" fill="#dcebfa" stroke="#26443a" stroke-width="1.2"/>
+<text x="653.4" y="158" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#f4f8fc" text-anchor="middle">240G used</text>
+<text x="671" y="93" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a" text-anchor="middle">nvme1n1 300G</text>
+<g stroke="#75908c" stroke-width="1.1" stroke-linecap="round">
+<line x1="608" y1="211" x2="608" y2="218"/>
+<line x1="620.6" y1="211" x2="620.6" y2="215"/>
+<line x1="633.2" y1="211" x2="633.2" y2="215"/>
+<line x1="645.8" y1="211" x2="645.8" y2="215"/>
+<line x1="658.4" y1="211" x2="658.4" y2="215"/>
+<line x1="671" y1="211" x2="671" y2="218"/>
+<line x1="683.6" y1="211" x2="683.6" y2="215"/>
+<line x1="696.2" y1="211" x2="696.2" y2="215"/>
+<line x1="708.8" y1="211" x2="708.8" y2="218"/>
+<line x1="721.4" y1="211" x2="721.4" y2="215"/>
+<line x1="734" y1="211" x2="734" y2="218"/>
+<line x1="608" y1="211" x2="734" y2="211"/>
+</g>
+<path d="M708.8,220 l-5,8 l10,0 Z" fill="#c9a56a" stroke="#26443a" stroke-width="1.1" stroke-linejoin="round"/>
+<text x="708.8" y="242" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a" text-anchor="middle"><tspan fill="#866429">80%</tspan></text>
+<text x="716.5" y="264" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#4c6d63" text-anchor="middle">--initial-utilization-threshold 80</text>
+<path d="M762,106 L825,106 A12,48 0 0 1 825,202 L762,202 A12,48 0 0 1 762,106 Z" fill="url(#hatch)" stroke="#26443a" stroke-width="0" stroke-linejoin="round" transform="translate(7 9)"/>
+<path d="M762,106 L825,106 A12,48 0 0 1 825,202 L762,202 A12,48 0 0 1 762,106 Z" fill="#c9a56a" stroke="#26443a" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M819,106 A12,48 0 0 1 819,202" fill="none" stroke="#26443a" stroke-width="1.2"/>
+<circle cx="818.6" cy="108.9" r="1.2" fill="#26443a"/>
+<circle cx="822.7" cy="119.1" r="1.2" fill="#26443a"/>
+<circle cx="825.5" cy="135" r="1.2" fill="#26443a"/>
+<circle cx="826.5" cy="154" r="1.2" fill="#26443a"/>
+<circle cx="825.5" cy="173" r="1.2" fill="#26443a"/>
+<circle cx="822.7" cy="188.9" r="1.2" fill="#26443a"/>
+<circle cx="818.6" cy="199.1" r="1.2" fill="#26443a"/>
+<ellipse cx="825" cy="154" rx="12" ry="48" fill="#f4f8fc" stroke="#26443a" stroke-width="2.2"/>
+<ellipse cx="825" cy="154" rx="12" ry="48" fill="#c9a56a" opacity="0.45"/>
+<ellipse cx="825" cy="154" rx="12" ry="48" fill="none" stroke="#26443a" stroke-width="2.2"/>
+<ellipse cx="825" cy="154" rx="7.4" ry="29.8" fill="none" stroke="#75908c" stroke-width="0.9"/>
+<ellipse cx="825" cy="154" rx="4.3" ry="17.3" fill="none" stroke="#75908c" stroke-width="0.9"/>
+<ellipse cx="825" cy="154" rx="2.4" ry="8" fill="#dcebfa" stroke="#26443a" stroke-width="1.2"/>
+<text x="793.5" y="93" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a" text-anchor="middle">nvme2n1 150G</text>
+<path d="M767.5,224 L753.5,224 M758.5,219 L753.5,224 L758.5,229" fill="none" stroke="#866429" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="774.5" y="228" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a"><tspan fill="#866429">+150G</tspan></text>
+<path d="M878,72 L1150,72 L1150,248 L1142.4,254 L1134.9,248 L1127.3,254 L1119.8,248 L1112.2,254 L1104.7,248 L1097.1,254 L1089.6,248 L1082,254 L1074.4,248 L1066.9,254 L1059.3,248 L1051.8,254 L1044.2,248 L1036.7,254 L1029.1,248 L1021.6,254 L1014,248 L1006.4,254 L998.9,248 L991.3,254 L983.8,248 L976.2,254 L968.7,248 L961.1,254 L953.6,248 L946,254 L938.4,248 L930.9,254 L923.3,248 L915.8,254 L908.2,248 L900.7,254 L893.1,248 L885.6,254 L878,248 Z" fill="url(#hatch)" transform="translate(7 9)"/>
+<path d="M878,72 L1150,72 L1150,248 L1142.4,254 L1134.9,248 L1127.3,254 L1119.8,248 L1112.2,254 L1104.7,248 L1097.1,254 L1089.6,248 L1082,254 L1074.4,248 L1066.9,254 L1059.3,248 L1051.8,254 L1044.2,248 L1036.7,254 L1029.1,248 L1021.6,254 L1014,248 L1006.4,254 L998.9,248 L991.3,254 L983.8,248 L976.2,254 L968.7,248 L961.1,254 L953.6,248 L946,254 L938.4,248 L930.9,254 L923.3,248 L915.8,254 L908.2,248 L900.7,254 L893.1,248 L885.6,254 L878,248 Z" fill="#f4f8fc" stroke="#26443a" stroke-width="2.2" stroke-linejoin="round"/>
+<circle cx="886" cy="86.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="86.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="886" cy="107.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="107.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="886" cy="129.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="129.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="886" cy="150.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="150.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="886" cy="172.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="172.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="886" cy="193.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="193.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="886" cy="215.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="215.0" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="886" cy="236.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<circle cx="1142" cy="236.5" r="2.3" fill="#dcebfa" stroke="#75908c" stroke-width="0.9"/>
+<text x="897" y="96" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#4c6d63">/var/log/ebs-autoscale.log</text>
+<line x1="897" y1="106" x2="1131" y2="106" stroke="#75908c" stroke-width="1"/>
+<text x="897" y="126" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10" fill="#26443a"><tspan fill="#4c6d63">INFO</tspan> low disk (util=<tspan fill="#866429">80%</tspan> threshold=<tspan fill="#866429">80%</tspan>)</text>
+<text x="897" y="143" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10" fill="#26443a"><tspan fill="#4c6d63">INFO</tspan> extending /scratch by <tspan fill="#866429">150GB</tspan></text>
+<text x="897" y="160" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10" fill="#26443a"><tspan fill="#4c6d63">INFO</tspan> adding /dev/nvme2n1 to</text>
+<text x="907" y="177" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10" fill="#26443a">/dev/mapper/autoscale_vg-autoscale_lv</text>
+<text x="897" y="194" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10" fill="#26443a"><tspan fill="#4c6d63">INFO</tspan> finished extending /scratch</text>
+<line x1="897" y1="206" x2="1131" y2="206" stroke="#75908c" stroke-width="1" stroke-dasharray="3 4" stroke-linecap="round"/>
+<text x="1014" y="227" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="13" fill="#4c6d63" text-anchor="middle">up to 16 volumes, 8000 GB in all</text>
+<g font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="13.5" fill="#4c6d63">
+<text x="716.5" y="34" text-anchor="middle">80% full, so a volume is added</text>
+<text x="1014" y="34" text-anchor="middle">and ext4 grows onto it</text>
+</g>
+</svg>
