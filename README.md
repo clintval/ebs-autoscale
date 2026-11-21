@@ -1,4 +1,6 @@
-# ebs-autoscale
+![Banner for ebs-autoscale](https://raw.githubusercontent.com/clintval/ebs-autoscale/main/.github/img/ebs-autoscale_banner.svg)
+
+---
 
 [![CI](https://github.com/clintval/ebs-autoscale/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/clintval/ebs-autoscale/actions/workflows/test.yml?query=branch%3Amain)
 [![ShellCheck](https://github.com/clintval/ebs-autoscale/actions/workflows/shellcheck.yml/badge.svg?branch=main)](https://github.com/clintval/ebs-autoscale/actions/workflows/shellcheck.yml?query=branch%3Amain)
